@@ -8,7 +8,7 @@ Docker Engine と Compose が使える環境で、リポジトリのルートか
 
 ```sh
 docker compose build
-docker compose run --rm --no-deps moment-draft python scripts/release_check.py --mode local
+docker compose run --rm --no-deps moment-draft python -m scripts.release_check --mode local
 docker compose up --no-build
 ```
 
@@ -24,20 +24,22 @@ Python 3.11、FFmpeg、`requirements.txt` の依存パッケージを用意す�
 
 ```sh
 install -d -m 700 "$PWD/.local/data"
-MOMENT_DATA_DIR="$PWD/.local/data" python scripts/release_check.py --mode local
+MOMENT_DATA_DIR="$PWD/.local/data" python -m scripts.release_check --mode local
 ```
 
 スクリプトはオリジンと待受先、保持日数、FFmpeg に指定したパスの実行可能性、データディレクトリの所有者と権限、空き容量10 GiBを確認する。`PASS` はその時点の設定確認を意味する。FFmpeg の機能、素材の読み込み、書き出し、再起動後の復元、利用者間の隔離を証明しない。終了コードは全項目合格で `0`、失敗項目があれば `1`、人による現地確認が残る場合は `2` である。結果にアクセスコードの値は出さない。
 
 ## 公開を検討する前に決める
 
-公開用の `--mode public` は HTTPS オリジン、公開用の待受先、アクセスコードの設定を調べる。TLS 終端、信頼するプロキシ、Secure Cookie、外部からの入場制御、実機の動作は `PENDING` と表示する。このスクリプトだけで公開可とは判定しない。ローカルコンテナの設定をそのまま公開に転用しない。
+公開試用は `MOMENT_PUBLIC_TRIAL=1` で明示的に有効にする。`MOMENT_ACCESS_CODE` だけでは公開起動できない。`MOMENT_ORIGIN` は単一の正規 HTTPS ドメイン起点、`MOMENT_ACCESS_CODE` はランダム生成した32文字以上の値、`MOMENT_TRUSTED_PROXY` は直前の単一プロキシの IP にする。既定値や例示値をアクセスコードに使わない。`MOMENT_CONTAINER_LOCAL=1` と公開試用は併用できない。
+
+公開用の `--mode public` は実装と同じ設定検証を行う。TLS 終端、信頼するプロキシ、Secure Cookie、外部からの入場制御、実機の動作は `PENDING` と表示する。このスクリプトだけで公開可とは判定しない。ローカルコンテナの設定をそのまま公開に転用しない。
 
 公開前に次を決め、対象ホストで検証する。
 
 1. ドメイン、TLS 終端、プロキシからアプリへ渡す Host と Origin、およびアクセスコードの配布方法を決める。秘密値をリポジトリに保存しない。
 2. 利用者ごとの閲覧とダウンロード拒否、CSRF、アップロード上限、再起動後の復元、ジョブ中断と再試行を実際の経路で確認する。
-3. 7日保存の起点、期限延長の有無、期限切れデータのアクセス拒否と物理削除の手順を決める。削除対象はサービスが所有する複製だけに限定し、削除前に dry run の対象一覧を確認する。
+3. 7日保存の起点、期限延長の有無、期限切れデータのアクセス拒否と物理削除の手順を決める。削除対象はサービスが所有する複製だけに限定し、既存の保持データに手動削除を適用する前には dry run の対象一覧を確認する。
 4. 実素材を扱う運用者、保存先、バックアップ、障害時の連絡、アクセスログに残す情報を決める。ログにファイル名、Cookie、アクセスコード、素材本文を記録しない。
 5. 実素材でブラウザの操作感、書き出し品質、手直しに要する時間を確認する。合成素材のCIは、この体験を証明しない。
 
@@ -50,3 +52,24 @@ MOMENT_DATA_DIR="$PWD/.local/data" python scripts/release_check.py --mode local
 ## 配布する前にライセンスを調べる
 
 リポジトリのコードは [Apache License 2.0](../LICENSE) で公開している。コンテナに含む FFmpeg とエンコーダーには別の条件がある。[FFmpeg の公式法務ページ](https://ffmpeg.org/legal.html) は、構成によって LGPL または GPL が適用され、特に `libx264` の利用に注意するよう示している。配布するイメージの `ffmpeg -buildconf` とパッケージのライセンス情報を確認し、必要な表示とソース提供条件を整理してからイメージを公開する。H.264などの特許条件も別に確認する。この文書は法的適合を保証しない。
+
+
+## 公開試用の入口とプロキシ
+
+`GET /` は Cookie のないブラウザにアクセスコード入力画面を返す。`POST /api/admission` は正しい Origin と1 KiB以下の JSON を要求し、成功時にだけ所有者 Cookie を発行する。コードは URL、ブラウザの永続保存、HTML に入れない。Cookie は HttpOnly、Secure、SameSite=Strict であり、作品はその Cookie の所有者だけが開ける。同じコードで入場しても他のブラウザの作品は引き継がない。入力失敗後は待ち時間が増え、IP ごとに毎分5回、全体で毎分100回まで試行できる。成功した新規入場も試行回数に含む。
+
+Waitress は指定した一つのプロキシだけから `X-Forwarded-Proto` と `X-Forwarded-For` を受け入れ、信頼する段数は1とする。`X-Forwarded-Host` やその他の未許可ヘッダーは削除する。プロキシは外部から届いた転送ヘッダーをそのまま引き継がず、正しい接続情報で設定し直す。Host は公開起点と一致させる。バックエンドの待受ポートは外部から直接到達できないように制限する。これらは [Waitress の公式設定](https://docs.pylonsproject.org/projects/waitress/en/stable/arguments.html) に基づく設定であり、実際の対象ホストでの確認は別途必要である。起点の末尾スラッシュや明示ポートは指定しない。
+
+公開モードの `/healthz` も正しい Host と HTTPS の WSGI 起点を要求する。ローカル用 Compose の HTTP ヘルスチェックを公開用の確認に流用しない。対象プロキシ経由の TLS、Secure Cookie の受信、直接ポートの遮断を実測するまでは公開可としない。
+
+## 保存期限と自動削除
+
+暫定の試用ポリシーは作成から7日で、環境設定 `MOMENT_RETENTION_DAYS` は1から7日を受け付ける。編集やダウンロードで期限を延長しない。期限を過ぎると直ちにアクセスを拒否し、起動時および60秒ごとの保守処理が期限切れのサービス内コピーを削除する。検証や書き出し中の素材は処理が解放されるまで残る。サービス停止や障害で物理削除が遅れる場合がある。端末の元ファイル、利用者がダウンロードしたコピー、サービス外のバックアップの削除は約束しない。
+
+停止したサービスの保存先に対し、`python -m moment_draft cleanup` で対象を確認できる。`--apply` を付けると実削除するため、既存データでは承認を得てから実行する。自動削除はサービス起動とともに有効になるので、既存の保存先を接続する前に保持方針と対象を確認する。
+
+## コンテナへの混入を検証する
+
+ビルド対象は実行用 Python、公開用 HTML/CSS/JavaScript、依存一覧、ライセンス、事前確認スクリプトだけに絞る。親ディレクトリの再包含の直後にその配下を再除外し、必要なファイルだけを許可する。Docker のパターンは [公式のビルドコンテキスト説明](https://docs.docker.com/build/concepts/context/#dockerignore-files) に従う。CI はパッケージと static の中へ DB・鍵・未許可階層の疑似ファイルを置き、完成イメージおよび全ビルドコンテキストをコピーした監査イメージの両方に混入していないことを検査する。ローカルで Docker が利用できない場合、この検査を実施済みとは扱わない。
+
+終了時は入場を停止し、自動削除と書き出しを停止してから、処理中の HTTP 要求の解放を待つ。要求がプローブ期限+60秒以内に解放されない場合は異常終了し、使用中のデータベースと保存先ロックを先に閉じない。大きな素材の照合や遅いディスクによる停止の遅延はあり得る。プロセス終了後もネイティブ処理が残る間は継承したロックが再起動を防ぐ。

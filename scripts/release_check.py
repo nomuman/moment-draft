@@ -10,6 +10,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from moment_draft.config import Config
+
 
 FREE_FLOOR = 10 * 1024**3
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
@@ -36,7 +38,7 @@ def _check_origin(value: str, mode: str, port: int) -> Check:
     except ValueError:
         address = None
     if mode == "local":
-        if origin.scheme != "http" or hostname not in LOOPBACK or origin_port != port:
+        if origin.scheme != "http" or hostname not in LOOPBACK or (origin_port or 80) != port:
             return Check("origin", "fail", "Local origin must be loopback HTTP on MOMENT_PORT")
     elif origin.scheme != "https" or address or "." not in hostname:
         return Check("origin", "fail", "Public origin must be a domain with HTTPS")
@@ -71,14 +73,28 @@ def evaluate(env: dict[str, str], mode: str) -> list[Check]:
     else:
         checks.append(Check("port", "pass", "Port is valid"))
 
+    try:
+        config = Config.environment(env).validate()
+        config.bind(env.get("MOMENT_HOST", "127.0.0.1"), port, env.get("MOMENT_CONTAINER_LOCAL") == "1")
+        if config.public_trial != (mode == "public"):
+            raise ValueError("MOMENT_PUBLIC_TRIAL must match the selected mode")
+    except ValueError as exc:
+        checks.append(Check("implementation", "fail", str(exc)))
+    else:
+        checks.append(Check("implementation", "pass", "Runtime configuration validation passed"))
+
     checks.append(_check_origin(env.get("MOMENT_ORIGIN", "http://127.0.0.1:8770"), mode, port))
     host = env.get("MOMENT_HOST", "127.0.0.1")
     container_local = env.get("MOMENT_CONTAINER_LOCAL") == "1"
     if mode == "local":
-        valid_bind = host in {"127.0.0.1", "::1"} or (host == "0.0.0.0" and container_local)
+        valid_bind = host in LOOPBACK or (host == "0.0.0.0" and container_local)
         detail = "Local bind is loopback or explicitly marked for loopback-published container use"
     else:
-        valid_bind = host in {"0.0.0.0", "::"} and not container_local
+        try:
+            ipaddress.ip_address(host)
+            valid_bind = not container_local
+        except ValueError:
+            valid_bind = False
         detail = "Public bind is configured without the local container exception"
     checks.append(Check("bind", "pass" if valid_bind else "fail", detail if valid_bind else "MOMENT_HOST conflicts with the selected mode"))
 
@@ -95,13 +111,13 @@ def evaluate(env: dict[str, str], mode: str) -> list[Check]:
     ffmpeg_detail = "Configured FFmpeg path is executable" if resolved else "MOMENT_FFMPEG is not executable"
     checks.append(Check("ffmpeg", "pass" if resolved else "fail", ffmpeg_detail))
 
-    data_dir = Path(env.get("MOMENT_DATA_DIR", "./data"))
+    data_dir = Path(env.get("MOMENT_DATA_DIR", ".local/service-data"))
     checks.extend(_check_storage(data_dir))
     if mode == "public":
-        admission = bool(env.get("MOMENT_ACCESS_CODE", "").strip())
-        admission_detail = "Admission code is configured" if admission else "MOMENT_ACCESS_CODE is required"
+        admission = not any(check.name == "implementation" and check.status == "fail" for check in checks)
+        admission_detail = "Explicit trial mode, strong admission code, and known proxy are configured" if admission else "Explicit trial mode, strong admission code, and a single known proxy are required"
         checks.append(Check("admission", "pass" if admission else "fail", admission_detail))
-        checks.append(Check("live_ingress", "pending", "Verify TLS, trusted proxy, secure cookies, and external admission before public use"))
+        checks.append(Check("live_ingress", "pending", "PENDING target verification: TLS, exact proxy, isolated backend port, secure cookies, and external admission"))
         checks.append(Check("live_product", "pending", "Verify real browser, native render, recovery, expiry, and access denial on the target host"))
     return checks
 

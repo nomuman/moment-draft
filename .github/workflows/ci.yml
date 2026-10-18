@@ -32,8 +32,21 @@ jobs:
           python -m pip install -r requirements.txt -r experiments/editor/requirements-test.txt
       - name: Test synthetic media and service behavior
         run: python -m unittest discover -s tests -v
-      - name: Build container
-        run: docker build -t moment-draft:ci .
+      - name: Build container with private-file canaries
+        run: |
+          touch moment_draft/private-canary.db moment_draft/private-canary.key
+          touch moment_draft/static/private-canary.db moment_draft/static/private-canary.key
+          mkdir -p moment_draft/static/unlisted scripts/unlisted moment_draft/unlisted.py moment_draft/static/unlisted.js
+          touch moment_draft/static/unlisted/private-canary.js scripts/unlisted/private-canary.py
+          touch moment_draft/unlisted.py/private-canary.key moment_draft/static/unlisted.js/private-canary.key
+          docker build -t moment-draft:ci .
+          docker run --rm --entrypoint python moment-draft:ci -c 'from pathlib import Path; assert not list(Path("/app").rglob("*canary*")), "Private image canary leaked"'
+          docker build -t moment-context:ci -f - . <<'CONTEXT'
+          FROM moment-draft:ci
+          COPY . /context
+          CONTEXT
+          docker run --rm --entrypoint python moment-context:ci -c 'from pathlib import Path; assert not list(Path("/context").rglob("*canary*")), "Private build context canary leaked"'
+
       - name: Check container loopback health
         run: |
           docker volume create moment-ci-data

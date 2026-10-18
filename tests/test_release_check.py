@@ -38,12 +38,21 @@ class ReleaseCheckTests(unittest.TestCase):
         self.assertEqual(self.check()["bind"].status, "pass")
 
     def test_public_config_needs_https_and_admission_and_remains_pending(self):
-        self.env.update({"MOMENT_HOST": "0.0.0.0", "MOMENT_ORIGIN": "https://example.org", "MOMENT_ACCESS_CODE": "secret-value"})
+        self.env.update({"MOMENT_HOST": "0.0.0.0", "MOMENT_ORIGIN": "https://example.org", "MOMENT_ACCESS_CODE": "R7xQz2Kp9Wm4Nv8Ts6Yh3Df5Jb1Lc0Ua", "MOMENT_PUBLIC_TRIAL": "1", "MOMENT_TRUSTED_PROXY": "127.0.0.1"})
         checks = self.check("public")
         self.assertEqual(checks["origin"].status, "pass")
         self.assertEqual(checks["admission"].status, "pass")
         self.assertEqual(checks["live_ingress"].status, "pending")
         self.assertNotIn("secret-value", repr(checks))
+
+    def test_public_mode_cannot_pass_without_runtime_flags_or_with_conflicting_flags(self):
+        self.env.update({"MOMENT_ORIGIN": "https://trial.example.org", "MOMENT_ACCESS_CODE": "R7xQz2Kp9Wm4Nv8Ts6Yh3Df5Jb1Lc0Ua"})
+        self.assertEqual(self.check("public")["implementation"].status, "fail")
+        self.env.update({"MOMENT_PUBLIC_TRIAL": "1", "MOMENT_TRUSTED_PROXY": "127.0.0.1"})
+        self.assertEqual(self.check("public")["implementation"].status, "pass")
+        self.assertEqual(self.check("local")["implementation"].status, "fail")
+        self.env["MOMENT_CONTAINER_LOCAL"] = "1"
+        self.assertEqual(self.check("public")["implementation"].status, "fail")
 
     def test_storage_and_space_fail_closed(self):
         os.chmod(self.directory.name, 0o755)
