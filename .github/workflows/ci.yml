@@ -13,7 +13,7 @@ permissions:
 jobs:
   native-and-container:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -47,16 +47,43 @@ jobs:
           CONTEXT
           docker run --rm --entrypoint python moment-context:ci -c 'from pathlib import Path; assert not list(Path("/context").rglob("*canary*")), "Private build context canary leaked"'
 
-      - name: Check container loopback health
+      - name: Check container health and synthetic media capacity
         run: |
+          set -euo pipefail
           docker volume create moment-ci-data
           trap 'docker rm -f moment-ci >/dev/null 2>&1 || true; docker volume rm moment-ci-data >/dev/null 2>&1 || true' EXIT
           docker run -d --name moment-ci --read-only --tmpfs /tmp:rw,nosuid,nodev,size=256m,mode=1777 --cap-drop ALL --security-opt no-new-privileges --pids-limit 128 --memory 2g --cpus 2 -p 127.0.0.1:8770:8770 -v moment-ci-data:/data -e MOMENT_HOST=0.0.0.0 -e MOMENT_ORIGIN=http://127.0.0.1:8770 -e MOMENT_CONTAINER_LOCAL=1 moment-draft:ci
+          ready=0
           for attempt in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:8770/healthz; then
-              exit 0
+            if curl --fail --silent http://127.0.0.1:8770/healthz >/dev/null; then
+              ready=1
+              break
             fi
             sleep 1
           done
-          docker logs moment-ci
-          exit 1
+          if [ "$ready" -ne 1 ]; then
+            docker logs moment-ci
+            exit 1
+          fi
+          test "$(docker inspect --format '{{.HostConfig.Memory}}' moment-ci)" = 2147483648
+          python scripts/check_container_media.py
+          test "$(docker inspect --format '{{.State.Running}}' moment-ci)" = true
+          test "$(docker inspect --format '{{.State.OOMKilled}}' moment-ci)" = false
+          docker exec -i moment-ci python - <<'PY'
+          from pathlib import Path
+
+          root = Path('/sys/fs/cgroup')
+          if (root / 'memory.peak').exists():
+              limit = int((root / 'memory.max').read_text())
+              peak = int((root / 'memory.peak').read_text())
+              events = dict(line.split() for line in (root / 'memory.events').read_text().splitlines())
+              failures = int(events.get('oom', 0)) + int(events.get('oom_kill', 0))
+          else:
+              memory = root / 'memory'
+              limit = int((memory / 'memory.limit_in_bytes').read_text())
+              peak = int((memory / 'memory.max_usage_in_bytes').read_text())
+              failures = int((memory / 'memory.failcnt').read_text())
+          print(f'cgroup_memory_limit_bytes={limit} cgroup_memory_peak_bytes={peak} cgroup_memory_failures={failures}')
+          if limit != 2147483648 or peak <= 0 or peak > limit or failures:
+              raise SystemExit(1)
+          PY
