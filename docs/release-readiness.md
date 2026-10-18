@@ -2,6 +2,8 @@
 
 この文書は試用版の実装と確認範囲を記録する。公開、契約、決済、外部AIへの素材送信を承認するものではない。
 
+変更は[読込実験 PR 1](https://github.com/nomuman/moment-draft/pull/1)、[最小編集 PR 2](https://github.com/nomuman/moment-draft/pull/2)、[保存・処理基盤 PR 9](https://github.com/nomuman/moment-draft/pull/9)、[候補・BGM・編集 PR 13](https://github.com/nomuman/moment-draft/pull/13)、[公開準備 PR 14](https://github.com/nomuman/moment-draft/pull/14)の順に依存する。統合したコードは `feat/service-ready` にあり、まだマージしていない。
+
 ## 実装した範囲
 
 PCブラウザから写真と動画を選び、初案を再生し、候補への差し替え・採用・除外・動画の前後調整・BGM選択を保存できる。プレビューとダウンロードは同じMP4を使う。途中送信の再開、再起動後の復元、書き出しの取消・再試行、利用者ごとの閲覧制限と期限を実装した。
