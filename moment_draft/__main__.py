@@ -57,22 +57,28 @@ def main():
     server = create_server(app, host=host, port=port, threads=6, max_request_body_size=config.chunk_bytes + 1, max_request_header_size=16384, connection_limit=32, channel_timeout=60, clear_untrusted_proxy_headers=True, **proxy)
 
     stopping = False
+    serving = False
 
     def stop(signum, frame):
         nonlocal stopping
         if stopping:
             return
         stopping = True
-        raise ExitNow()
+        if serving:
+            raise ExitNow()
 
-    signal.signal(signal.SIGTERM, stop)
-    signal.signal(signal.SIGINT, stop)
     retention = Retention(projects)
-    worker.start()
-    retention.start()
     try:
-        print(f"moment draft {config.origin}", flush=True)
-        server.run()
+        signal.signal(signal.SIGTERM, stop)
+        signal.signal(signal.SIGINT, stop)
+        if not stopping:
+            worker.start()
+        if not stopping:
+            retention.start()
+        serving = True
+        if not stopping:
+            print(f"moment draft {config.origin}", flush=True)
+            server.run()
     except (ExitNow, KeyboardInterrupt):
         pass
     finally:

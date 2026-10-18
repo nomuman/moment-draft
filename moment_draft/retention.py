@@ -14,7 +14,8 @@ class Retention:
 
     def stop(self):
         self.stopped.set()
-        self.thread.join()
+        if self.thread.ident is not None:
+            self.thread.join()
 
     def run(self):
         while not self.stopped.is_set():
