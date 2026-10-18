@@ -1,5 +1,6 @@
 import hashlib
 import os
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -145,7 +146,14 @@ class ServiceTests(unittest.TestCase):
         self.upload(self.photo())
         self.call(self.base + "/draft", {"revision": 0})
         self.call(self.base + "/jobs", {"revision": 1, "request_key": "after-cleanup-job"})
-        with patch("moment_draft.worker.shutil.rmtree", side_effect=PermissionError), self.assertLogs("moment_draft.worker", level="ERROR") as logs:
+        remove = shutil.rmtree
+
+        def fail_attempt_removal(path, *args, **kwargs):
+            if Path(path).parent == self.store.directory(self.project) / "attempts":
+                raise PermissionError
+            return remove(path, *args, **kwargs)
+
+        with patch("moment_draft.worker.shutil.rmtree", side_effect=fail_attempt_removal), self.assertLogs("moment_draft.worker", level="ERROR") as logs:
             self.assertTrue(worker.run_once())
         self.assertIn("attempt cleanup failed: PermissionError", logs.output[0])
         self.assertNotIn(str(self.root), logs.output[0])
