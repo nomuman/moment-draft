@@ -4,11 +4,29 @@ import os
 import signal
 
 from waitress import create_server
+from waitress.channel import HTTPChannel
+from waitress.server import MultiSocketServer
+from waitress.wasyncore import ExitNow
 
 from .config import Config
 from .projects import Projects
+from .retention import Retention
 from .web import create_app
 from .worker import Worker
+
+
+def stop_service(server, retention, worker, projects, timeout):
+    channels = server.map if isinstance(server, MultiSocketServer) else server.active_channels
+    for channel in list(channels.values()):
+        if isinstance(channel, HTTPChannel):
+            channel.handle_close()
+    server.close()
+    retention.stop()
+    worker.stop()
+    server.task_dispatcher.shutdown(timeout=timeout)
+    if server.task_dispatcher.threads:
+        raise RuntimeError("処理中の要求が解放されませんでした。保存先のロックはプロセス終了まで保持します。")
+    projects.close()
 
 
 def main():
@@ -27,24 +45,45 @@ def main():
         finally:
             projects.close()
         return
+    app = create_app(projects)
+    if config.public_trial and not app.extensions.get("moment_admission"):
+        projects.close()
+        raise RuntimeError("公開試用の入場制御が組み込まれていません。")
     worker = Worker(projects)
-    server = create_server(create_app(projects), host=host, port=port, threads=6, max_request_body_size=config.chunk_bytes, max_request_header_size=16384, connection_limit=32, channel_timeout=60, clear_untrusted_proxy_headers=True)
+    proxy = {}
+    if config.public_trial:
+        proxy = {"trusted_proxy": config.trusted_proxy, "trusted_proxy_count": 1,
+                 "trusted_proxy_headers": {"x-forwarded-proto", "x-forwarded-for"}}
+    server = create_server(app, host=host, port=port, threads=6, max_request_body_size=config.chunk_bytes + 1, max_request_header_size=16384, connection_limit=32, channel_timeout=60, clear_untrusted_proxy_headers=True, **proxy)
+
+    stopping = False
+    serving = False
 
     def stop(signum, frame):
-        raise KeyboardInterrupt()
+        nonlocal stopping
+        if stopping:
+            return
+        stopping = True
+        if serving:
+            raise ExitNow()
 
-    signal.signal(signal.SIGTERM, stop)
-    signal.signal(signal.SIGINT, stop)
-    worker.start()
+    retention = Retention(projects)
     try:
-        print(f"moment draft {config.origin}", flush=True)
-        server.run()
-    except KeyboardInterrupt:
+        signal.signal(signal.SIGTERM, stop)
+        signal.signal(signal.SIGINT, stop)
+        if not stopping:
+            worker.start()
+        if not stopping:
+            retention.start()
+        serving = True
+        if not stopping:
+            print(f"moment draft {config.origin}", flush=True)
+            server.run()
+    except (ExitNow, KeyboardInterrupt):
         pass
     finally:
-        server.close()
-        worker.stop()
-        projects.close()
+        stopping = True
+        stop_service(server, retention, worker, projects, config.probe_seconds + 60)
 
 
 if __name__ == "__main__":

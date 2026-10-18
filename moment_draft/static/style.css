@@ -76,10 +76,19 @@ summary:focus-visible { outline: 3px solid #af784a; outline-offset: 3px; }
 .actions { flex-wrap: wrap; margin: 24px 0; }
 #reload-edit { margin-bottom: 24px; }
 #retry-thumbnails { margin-top: 24px; }
+#notice:empty { display: none; }
+body:has(#editor:not([hidden])) .intro { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 24px; align-items: start; margin-bottom: 24px; }
+body:has(#editor:not([hidden])) .intro h1 { font-size: 1.25rem; margin: 0; }
+body:has(#editor:not([hidden])) .intro > p:not(.retention) { display: none; }
+body:has(#editor:not([hidden])) .intro .retention { grid-column: 1; margin: 0; font-size: 11px; }
+body:has(#editor:not([hidden])) .intro .file-button { grid-column: 2; grid-row: 1 / span 2; }
+body:has(#editor:not([hidden])) #output { max-height: min(45vh, 480px); }
 select:disabled, input:disabled { opacity: .65; }
 button:active:not(:disabled), .file-button:active { background: #1d3829; color: #fff; }
 @media (max-width: 760px) {
   h1 { font-size: 1.65rem; }
   .section-heading { flex-wrap: wrap; gap: 8px; }
   #upload-summary { display: block; margin-left: 0; line-height: 1.6; }
+  body:has(#editor:not([hidden])) .intro { grid-template-columns: 1fr; }
+  body:has(#editor:not([hidden])) .intro .file-button { grid-column: 1; grid-row: auto; justify-self: start; }
 }

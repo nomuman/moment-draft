@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 from flask import Flask, Response, g, jsonify, request, send_from_directory
 from werkzeug.exceptions import HTTPException
 
+from .admission import register_admission
 from .projects import Problem
 
 
@@ -18,6 +19,7 @@ def create_app(projects):
     static = Path(__file__).parent / "static"
     origin = projects.config.origin
     host = urlsplit(origin).netloc
+    register_admission(app, projects)
 
     @app.before_request
     def boundaries():

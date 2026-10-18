@@ -36,9 +36,14 @@ async function api(path, data, method = "POST", headers = {}) {
     }
   }
   const response = await fetch(path, options);
-  const value = await response.json();
-  if (!response.ok) {
-    const error = new Error(value.error || "処理を完了できませんでした。");
+  let value;
+  if (response.headers.get("Content-Type")?.split(";")[0].trim() === "application/json") {
+    try { value = await response.json(); } catch {}
+  } else {
+    await response.body?.cancel();
+  }
+  if (!response.ok || value === undefined) {
+    const error = new Error(value?.error || "処理を完了できませんでした。少し待って再試行してください。");
     error.status = response.status;
     throw error;
   }

@@ -1,0 +1,37 @@
+services:
+  moment-draft:
+    build: .
+    ports:
+      - "127.0.0.1:8770:8770"
+    environment:
+      MOMENT_DATA_DIR: /data
+      MOMENT_FFMPEG: /usr/bin/ffmpeg
+      MOMENT_HOST: 0.0.0.0
+      MOMENT_PORT: 8770
+      MOMENT_ORIGIN: http://127.0.0.1:8770
+      MOMENT_CONTAINER_LOCAL: "1"
+    volumes:
+      - moment-data:/data
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 2g
+    cpus: 2
+    init: true
+    stop_grace_period: 30s
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8770/healthz', timeout=3).close()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  moment-data:

@@ -1,6 +1,7 @@
 import http.client
 import http.cookiejar
 import io
+import itertools
 import json
 import os
 import signal
@@ -23,6 +24,85 @@ from moment_draft.projects import Projects
 
 
 class ProcessTests(unittest.TestCase):
+    def test_shutdown_releases_stalled_playback_and_download_before_restart(self):
+        for host, shutdown_signal in itertools.product(("localhost", "127.0.0.1"), (signal.SIGINT, signal.SIGTERM)):
+            with self.subTest(host=host, signal=shutdown_signal), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                with socket.socket() as listener:
+                    listener.bind(("127.0.0.1", 0))
+                    port = listener.getsockname()[1]
+                origin = f"http://{host}:{port}"
+                config = Config(root / "data", origin=origin, free_floor=0)
+                projects = Projects(config)
+                token, session = projects.new_session()
+                project = projects.create(session["owner"])["id"]
+                job = "stalled-response"
+                with projects.transaction() as db:
+                    db.execute("INSERT INTO jobs(id,project,revision,request_key,payload_hash,snapshot,state,created) VALUES(?,?,0,?,?,?,'succeeded',?)",
+                               (job, project, job, "fixture", "{}", time.time()))
+                artifact = projects.artifact_path(project, job)
+                with artifact.open("wb") as output:
+                    output.truncate(32 * 1024**2)
+                projects.close()
+                env = {**os.environ, "MOMENT_DATA_DIR": str(config.data_dir), "MOMENT_HOST": host,
+                       "MOMENT_PORT": str(port), "MOMENT_ORIGIN": origin}
+                processes, connections = [], []
+                log_path = root / "server.log"
+                with log_path.open("ab") as log:
+                    def start():
+                        child = subprocess.Popen([sys.executable, "-m", "moment_draft"], env=env, stdout=log, stderr=log)
+                        processes.append(child)
+                        deadline = time.monotonic() + 10
+                        while time.monotonic() < deadline:
+                            self.assertIsNone(child.poll(), log_path.read_text())
+                            try:
+                                with build_opener().open(origin + "/healthz", timeout=1) as response:
+                                    self.assertEqual(response.status, 200)
+                                    return child
+                            except (URLError, TimeoutError):
+                                time.sleep(.05)
+                        self.fail("service did not start")
+
+                    try:
+                        process = start()
+                        endpoint = f"/api/projects/{project}/jobs/{job}/artifact"
+                        for suffix in ("", "?download=1"):
+                            connection = http.client.HTTPConnection(host, port, timeout=3)
+                            connections.append(connection)
+                            connection.connect()
+                            connection.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+                            connection.request("GET", endpoint + suffix, headers={"Cookie": f"moment_owner={token}"})
+                            response = connection.getresponse()
+                            self.assertEqual(response.status, 200)
+                            self.assertEqual(int(response.getheader("Content-Length")), artifact.stat().st_size)
+                            if suffix:
+                                self.assertIn("attachment", response.getheader("Content-Disposition"))
+                        time.sleep(.2)
+                        process.send_signal(shutdown_signal)
+                        try:
+                            process.wait(timeout=8)
+                        except subprocess.TimeoutExpired:
+                            self.fail("service did not release stalled media responses during shutdown")
+                        self.assertEqual(process.returncode, 0, log_path.read_text())
+                        self.assertNotIn("thread(s) still running", log_path.read_text())
+                        restarted = start()
+                        connection = http.client.HTTPConnection(host, port, timeout=3)
+                        connections.append(connection)
+                        connection.request("GET", endpoint, headers={"Cookie": f"moment_owner={token}", "Range": "bytes=0-15"})
+                        response = connection.getresponse()
+                        self.assertEqual(response.status, 206)
+                        self.assertEqual(response.read(), bytes(16))
+                        restarted.terminate()
+                        restarted.wait(timeout=8)
+                        self.assertEqual(restarted.returncode, 0, log_path.read_text())
+                    finally:
+                        for connection in connections:
+                            connection.close()
+                        for child in processes:
+                            if child.poll() is None:
+                                child.kill()
+                                child.wait(timeout=5)
+
     def test_restart_preserves_cookie_chunks_job_and_output(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -68,6 +148,12 @@ class ProcessTests(unittest.TestCase):
                 csrf = call("/api/session")["csrf"]
                 project = call("/api/projects", {})["id"]
                 base = f"/api/projects/{project}"
+                chunk = b"x" * (8 * 1024**2)
+                boundary_asset = call(base + "/assets", {"name": "boundary.mp4", "size": len(chunk)})["id"]
+                boundary_endpoint = base + f"/assets/{boundary_asset}"
+                self.assertEqual(call(boundary_endpoint + "/chunks", chunk, "PUT", {"Upload-Offset": "0"})["offset"], len(chunk))
+                self.assertEqual(call(boundary_endpoint)["offset"], len(chunk))
+                call(boundary_endpoint, method="DELETE", extra={"X-CSRF-Token": csrf})
                 image = io.BytesIO()
                 Image.new("RGB", (48, 96), "red").save(image, format="PNG")
                 data = image.getvalue()

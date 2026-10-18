@@ -20,7 +20,7 @@ class Worker:
 
     def stop(self):
         self.stop_event.set()
-        if self.thread:
+        if self.thread is not None and self.thread.ident is not None:
             self.thread.join()
 
     def loop(self):

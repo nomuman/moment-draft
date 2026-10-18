@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>試用をはじめる · moment draft</title>
+  <link rel="stylesheet" href="/static/admission.css">
+  <script src="/static/admission.js" defer></script>
+</head>
+<body>
+  <header>moment draft</header>
+  <main>
+    <h1>写真と動画から、<br>ひとつの思い出に。</h1>
+    <p>招待された方だけの試用版です。<br>受け取ったアクセスコードを入力してください。</p>
+    <form id="admission">
+      <label for="code">アクセスコード</label>
+      <input id="code" name="code" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="256" required aria-describedby="status">
+      <button type="submit">試用をはじめる</button>
+      <p id="status" role="status" aria-live="polite"></p>
+    </form>
+    <aside>
+      <h2>作品を開くときは、このブラウザで</h2>
+      <p>作品を開くための情報は、このブラウザの Cookie に保存します。Cookie を削除したり、別のブラウザを使うと、同じコードでも作品は引き継げません。</p>
+      <p>試用中の保存期限は作成から最大7日です。作品ごとの期限は素材を送る前に表示します。期限後は開けなくなり、サービス内のコピーを順次削除します。必要な動画は期限内にダウンロードしてください。</p>
+    </aside>
+  </main>
+  <footer>元の写真や動画は、お使いの端末に残ります。</footer>
+</body>
+</html>

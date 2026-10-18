@@ -11,7 +11,7 @@ import av
 import numpy as np
 from PIL import Image
 
-from moment_draft.media import Cancelled, render
+from moment_draft.media import Cancelled, render, verify_output
 from moment_draft.timeline import EditPlan, Scene, Source
 
 
@@ -89,6 +89,7 @@ class RenderMemoryTests(unittest.TestCase):
         for boundary in range(1, 20):
             offset = boundary * 7 * 1600
             self.assertGreater(np.abs(sound[offset - 480:offset + 480]).mean(), .01)
+        self.assertGreater(np.abs(sound[139 * 1600:140 * 1600]).mean(), .01)
         section = sound[48000:96000]
         spectrum = np.abs(np.fft.rfft(section))
         self.assertGreater(spectrum[880], 500)
@@ -103,6 +104,14 @@ class RenderMemoryTests(unittest.TestCase):
                    lambda: not values or values[-1] < .28, values.append, 60)
         self.assertFalse((work / "output.mp4").exists())
         self.assertFalse(list(work.glob("scenes-*")))
+
+    def test_output_verification_rejects_audio_ending_before_video(self):
+        output = self.root / "short-audio.mp4"
+        subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-i", str(self.video),
+                        "-vf", "scale=1280:720,fps=30", "-af", "atrim=end_sample=189600",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-threads", "2", "-c:a", "aac", str(output)], check=True)
+        with self.assertRaisesRegex(ValueError, "音声長"):
+            verify_output(output, 120)
 
 
 if __name__ == "__main__":
