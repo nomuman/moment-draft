@@ -65,7 +65,7 @@ def verify_output(path, expected_frames, active=lambda: True):
         if frames != expected_frames:
             raise ValueError("書き出しの長さが一致しません。")
         duration = float(audio.duration * audio.time_base) if audio.duration is not None else 0
-        if abs(duration - expected_frames / FPS) > .1:
+        if abs(duration - expected_frames / FPS) > 1 / 48000:
             raise ValueError("書き出しの音声長が一致しません。")
 
 
@@ -194,14 +194,15 @@ def render(snapshot, paths, work, ffmpeg, active, progress, timeout, music_path=
         manifest = segments / "concat.txt"
         manifest.write_text("\n".join(entries) + "\n")
         duration = plan.frame_count / FPS
+        audio_samples = plan.frame_count * 48000 // FPS
         args = base + ["-f", "concat", "-safe", "1", "-protocol_whitelist", "file,pipe", "-threads", "2", "-i", str(manifest)]
-        filters = [f"[0:a]aresample=48000,apad,atrim=duration={duration:.6f},asetpts=PTS-STARTPTS[original]"]
+        filters = ["[0:a]aresample=48000,apad,asetpts=PTS-STARTPTS[original]"]
         if music_path:
             args += ["-stream_loop", "-1", "-threads", "2", "-protocol_whitelist", "file,pipe", "-i", str(music_path)]
             level = snapshot["music"]["level"]
-            filters += [f"[1:a]aresample=48000,atrim=duration={duration:.6f},asetpts=PTS-STARTPTS,volume={level:.4f},afade=t=in:d=1,afade=t=out:st={max(0, duration - 2):.6f}:d=2[bgm]", "[original][bgm]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95:level=false[a]"]
+            filters += [f"[1:a]aresample=48000,atrim=duration={duration:.6f},asetpts=PTS-STARTPTS,volume={level:.4f},afade=t=in:d=1,afade=t=out:st={max(0, duration - 2):.6f}:d=2[bgm]", f"[original][bgm]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95:level=false,atrim=end_sample={audio_samples}[a]"]
         else:
-            filters.append("[original]anull[a]")
+            filters.append(f"[original]atrim=end_sample={audio_samples}[a]")
         args += ["-filter_complex", ";".join(filters), "-filter_complex_threads", "2", "-map", "0:v", "-map", "[a]",
                  "-c:v", "copy", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-movie_timescale", "48000", "-movflags", "+faststart", str(target)]
         execute(args, .85, .09, duration)
