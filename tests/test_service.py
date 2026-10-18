@@ -100,20 +100,254 @@ class ServiceTests(unittest.TestCase):
         path = self.store.artifact_path(self.project, job["id"])
         with av.open(str(path)) as container:
             frames = list(container.decode(video=0))
-        self.assertEqual(len(frames), 210)
+        self.assertEqual(len(frames), 120)
         self.assertLess(frames[30].to_ndarray(format="rgb24")[360, 100].max(), 25)
         self.assertGreater(frames[30].to_ndarray(format="rgb24")[360, 640, 0], 180)
-        self.assertGreater(frames[200].to_ndarray(format="rgb24")[360, 640, 2], 180)
+        self.assertGreater(frames[110].to_ndarray(format="rgb24")[360, 640, 2], 180)
         with av.open(str(path)) as container:
             sound = np.concatenate([frame.to_ndarray() for frame in container.decode(audio=0)], axis=1)
         self.assertLess(np.abs(sound[:, :48000]).mean(), .002)
-        self.assertGreater(np.abs(sound[:, 6 * 48000:]).mean(), .005)
+        self.assertGreater(np.abs(sound[:, 3 * 48000:]).mean(), .005)
         stranger = self.app.test_client()
         self.call("/api/session", client=stranger)
         for url in [self.base, self.base + f"/assets/{video}", self.base + f"/assets/{video}/source", artifact]:
             self.assertEqual(self.call(url, headers={"Range": "bytes=0-9"}, client=stranger).status_code, 404)
         self.call(self.base + "/edits", {"revision": 2, "change": {"kind": "exclude", "scene_id": scene}})
         self.assertEqual(self.call(artifact).status_code, 404)
+
+    def test_cleanup_after_completion_waits_for_attempt_release_and_worker_continues(self):
+        self.upload(self.photo())
+        self.call(self.base + "/draft", {"revision": 0})
+        self.call(self.base + "/jobs", {"revision": 1, "request_key": "cleanup-completion"})
+        complete = self.store.complete
+        first_project = self.project
+        observed = []
+
+        def complete_then_cleanup(job, target):
+            result = complete(job, target)
+            self.now += self.config.retention_seconds
+            cleanup = threading.Thread(target=lambda: observed.append(self.store.cleanup(dry_run=False)))
+            cleanup.start()
+            cleanup.join(timeout=5)
+            self.assertFalse(cleanup.is_alive())
+            self.assertTrue(self.store.directory(first_project).exists())
+            return result
+
+        worker = Worker(self.store)
+        with patch.object(self.store, "complete", side_effect=complete_then_cleanup):
+            self.assertTrue(worker.run_once())
+        self.assertEqual(observed, [[first_project]])
+        self.store.cleanup(dry_run=False)
+        self.assertFalse(self.store.directory(first_project).exists())
+        self.csrf = self.call("/api/session").json["csrf"]
+        self.project = self.call("/api/projects", {}).json["id"]
+        self.base = f"/api/projects/{self.project}"
+        self.upload(self.photo())
+        self.call(self.base + "/draft", {"revision": 0})
+        self.call(self.base + "/jobs", {"revision": 1, "request_key": "after-cleanup-job"})
+        with patch("moment_draft.worker.shutil.rmtree", side_effect=PermissionError), self.assertLogs("moment_draft.worker", level="ERROR") as logs:
+            self.assertTrue(worker.run_once())
+        self.assertIn("attempt cleanup failed: PermissionError", logs.output[0])
+        self.assertNotIn(str(self.root), logs.output[0])
+        self.assertEqual(self.call(self.base).json["jobs"][0]["state"], "succeeded")
+        self.assertTrue(worker.run_once())
+
+    def test_session_cap_and_cleanup_preserve_retained_project_owners(self):
+        token = self.client.get_cookie("moment_owner", domain="127.0.0.1").value
+        with patch("moment_draft.projects.SESSION_LIMIT", 2):
+            abandoned_token, _ = self.store.new_session()
+            self.assertEqual(self.call("/api/session", client=self.app.test_client()).status_code, 429)
+            self.assertEqual(len(self.store.list(self.store.session(token)["owner"])), 1)
+            self.now += self.config.retention_seconds
+            with self.store.transaction() as db:
+                db.execute("UPDATE projects SET expires=? WHERE id=?", (self.now + 100, self.project))
+            self.store.cleanup(dry_run=True)
+            self.assertIsNotNone(self.store.session(abandoned_token))
+            self.store.cleanup(dry_run=False)
+            self.assertIsNone(self.store.session(abandoned_token))
+            self.assertIsNotNone(self.store.session(token))
+            self.assertEqual(self.call(self.base).status_code, 200)
+            self.assertEqual(self.call("/api/session", client=self.app.test_client()).status_code, 200)
+
+    def test_candidates_cover_distinct_source_windows_and_short_material(self):
+        from moment_draft.timeline import Source, baseline, candidates, edit
+        photo = Source("photo", "photo.png", 1, 48, 96, "image")
+        video = Source("video", "video.mp4", 1, 96, 48, "video", 30 * 18)
+        plan = baseline([photo, video])
+        self.assertEqual(plan.frame_count, 21 * 30)
+        windows = [(item.source_id, item.start_frame, item.end_frame) for item in plan.scenes]
+        self.assertEqual(len(windows), len(set(windows)))
+        video_scenes = [item for item in plan.scenes if item.kind == "video"]
+        self.assertEqual([(item.start_frame, item.end_frame) for item in video_scenes], [(0, 180), (180, 360), (360, 540)])
+        last = candidates([video])[-1]
+        replaced = edit(plan, {"kind": "replace", "scene_id": plan.scenes[0].id, "candidate_id": last.id}, [photo, video])
+        self.assertEqual((replaced.scenes[0].start_frame, replaced.scenes[0].end_frame), (360, 540))
+        self.assertEqual(baseline([photo]).frame_count, 90)
+        photos = [Source(str(index), "photo.png", 1, 48, 96, "image") for index in range(100)]
+        selected = baseline(photos)
+        self.assertEqual(selected.frame_count, 1800)
+        self.assertEqual(len({item.source_id for item in selected.scenes}), 20)
+        videos = [Source(str(index), "video.mp4", 1, 96, 48, "video", 30 * 6) for index in range(100)]
+        distributed = baseline(videos)
+        self.assertEqual(len(distributed.scenes), 10)
+        self.assertEqual(distributed.scenes[-1].source_id, "99")
+        short = [Source(str(index), "video.mp4", 1, 96, 48, "video", 30) for index in range(100)]
+        self.assertEqual(baseline(short).frame_count, 1800)
+        long = Source("long", "long.mp4", 1, 96, 48, "video", 30 * 400)
+        offered = candidates([long])
+        self.assertEqual(len(offered), 12)
+        self.assertEqual(offered[-1].end_frame, long.duration_frames)
+        self.assertTrue(all(a.end_frame <= b.start_frame for a, b in zip(offered, offered[1:])))
+        self.assertEqual(baseline([long]).frame_count, 1800)
+
+    def test_busy_finish_preserves_bytes_and_thumbnail_worker_is_owned_and_bounded(self):
+        data = self.photo().read_bytes()
+        asset = self.call(self.base + "/assets", {"name": "portrait.png", "size": len(data)}).json["id"]
+        endpoint = self.base + f"/assets/{asset}"
+        self.call(endpoint + "/chunks", data, "PUT", {"Upload-Offset": "0"})
+        with self.store.native_slot() as acquired:
+            self.assertTrue(acquired)
+            self.assertEqual(self.call(endpoint + "/finish", {}).status_code, 429)
+            self.assertFalse(Worker(self.store).run_once())
+        state = self.call(endpoint).json
+        self.assertEqual((state["state"], state["offset"]), ("receiving", len(data)))
+        self.assertEqual(self.call(endpoint + "/finish", {}).json["state"], "ready")
+        self.call(self.base + "/draft", {"revision": 0})
+        worker = Worker(self.store)
+        self.assertTrue(worker.run_once())
+        self.assertTrue(worker.run_once())
+        self.assertFalse(worker.run_once())
+        state = self.call(self.base).json
+        scene_thumb = state["thumbnails"]["scene-scene-1"]["url"]
+        response = self.call(scene_thumb)
+        self.assertEqual(response.status_code, 200)
+        import io
+        with Image.open(io.BytesIO(response.data)) as image:
+            self.assertEqual(image.size, (480, 270))
+            self.assertLess(max(image.getpixel((10, 135))), 25)
+            self.assertGreater(image.getpixel((240, 135))[0], 180)
+        stranger = self.app.test_client()
+        self.call("/api/session", client=stranger)
+        self.assertEqual(self.call(scene_thumb, client=stranger).status_code, 404)
+        self.assertEqual(self.call(scene_thumb, headers={"Range": "bytes=0-19"}).status_code, 206)
+        self.now += self.config.retention_seconds
+        self.assertEqual(self.call(scene_thumb).status_code, 404)
+
+    def test_thumbnail_failure_has_one_explicit_retry(self):
+        self.upload(self.photo())
+        self.call(self.base + "/draft", {"revision": 0})
+        worker = Worker(self.store)
+        with patch("moment_draft.worker.create_thumbnail", side_effect=ValueError):
+            for _ in range(2):
+                self.assertTrue(worker.run_once())
+            self.assertFalse(worker.run_once())
+            failed = self.call(self.base).json["thumbnails"]
+            self.assertTrue(all(item["state"] == "failed" and item["retryable"] for item in failed.values()))
+            self.assertEqual(self.call(self.base + "/thumbnails/retry", {}).status_code, 200)
+            for _ in range(2):
+                self.assertTrue(worker.run_once())
+            exhausted = self.call(self.base + "/thumbnails/retry", {}).json["thumbnails"]
+            self.assertTrue(all(item["state"] == "failed" and not item["retryable"] for item in exhausted.values()))
+            self.assertFalse(worker.run_once())
+
+    def test_music_native_mix_immutable_revisions_and_reload(self):
+        self.upload(self.photo())
+        self.upload(self.video())
+        state = self.call(self.base + "/draft", {"revision": 0}).json
+        tracks = self.call("/api/music").json["tracks"]
+        self.assertEqual(len(tracks), 3)
+        self.assertTrue(all(track["license"] == "CC0-1.0" for track in tracks))
+        worker = Worker(self.store)
+        sounds = {}
+        for choice in ["off", *(track["id"] for track in tracks)]:
+            if choice != "off":
+                state = self.call(self.base + "/edits", {"revision": state["revision"], "change": {"kind": "music", "id": choice}}).json
+            job = self.call(self.base + "/jobs", {"revision": state["revision"], "request_key": "music-test-" + choice}).json
+            self.assertTrue(worker.run_once())
+            current = self.call(self.base).json
+            self.assertEqual(current["jobs"][0]["state"], "succeeded", current)
+            with av.open(str(self.store.artifact_path(self.project, job["id"]))) as container:
+                sounds[choice] = np.concatenate([frame.to_ndarray() for frame in container.decode(audio=0)], axis=1).mean(axis=0)
+            self.assertEqual(current["music"]["id"], choice)
+        silent = sounds["off"][48000:96000]
+        self.assertLess(np.abs(silent).mean(), .0001)
+        for choice, sound in sounds.items():
+            if choice != "off":
+                self.assertGreater(np.abs(sound[48000:96000]).mean(), .001)
+                self.assertLess(np.max(np.abs(sound)), .97)
+            segment = sound[round(3.2 * 48000):round(4.2 * 48000)]
+            spectrum = np.abs(np.fft.rfft(segment))
+            frequencies = np.fft.rfftfreq(len(segment), 1 / 48000)
+            band = spectrum[(frequencies > 875) & (frequencies < 885)].max()
+            self.assertGreater(band, 500)
+        old_revision = state["revision"]
+        immutable = self.call(self.base + "/jobs", {"revision": old_revision, "request_key": "immutable-music"}).json
+        edited = self.call(self.base + "/edits", {"revision": old_revision, "change": {"kind": "music", "id": "off"}}).json
+        self.assertIsNone(edited["artifact"])
+        self.assertEqual(self.call(self.base + "/edits", {"revision": old_revision, "change": {"kind": "music", "id": "calm"}}).status_code, 409)
+        self.assertTrue(worker.run_once())
+        with self.store.lock:
+            snapshot = self.store.db.execute("SELECT snapshot FROM jobs WHERE id=?", (immutable["id"],)).fetchone()[0]
+        import json
+        self.assertEqual(json.loads(snapshot)["music"]["id"], tracks[-1]["id"])
+        self.assertIsNone(self.call(self.base).json["artifact"])
+        token = self.client.get_cookie("moment_owner", domain="127.0.0.1").value
+        self.store.close()
+        self.store = Projects(self.config, clock=lambda: self.now)
+        self.app = create_app(self.store)
+        self.client = self.app.test_client()
+        self.client.set_cookie("moment_owner", token, domain="127.0.0.1")
+        restored = self.call(self.base).json
+        self.assertEqual(restored["music"], {"id": "off", "level": 0})
+        self.assertEqual(restored["revision"], old_revision + 1)
+        invalid = self.call(self.base + "/edits", {"revision": restored["revision"], "change": {"kind": "music", "id": []}})
+        self.assertEqual(invalid.status_code, 400)
+
+    def test_candidate_replacement_trim_and_thumbnail_source_time(self):
+        video = self.root / "colors.mp4"
+        subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=96x48:r=30:d=6", "-f", "lavfi", "-i", "color=c=green:s=96x48:r=30:d=6", "-f", "lavfi", "-i", "color=c=blue:s=96x48:r=30:d=6", "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1:a=0[v]", "-map", "[v]", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video)], check=True)
+        asset = self.upload(video)
+        state = self.call(self.base + "/draft", {"revision": 0}).json
+        self.assertEqual(len(state["plan"]["scenes"]), 3)
+        candidate = state["candidates"][-1]
+        changes = [
+            {"kind": "replace", "scene_id": "scene-1", "candidate_id": candidate["id"]},
+            {"kind": "trim", "scene_id": "scene-1", "start_frame": 375, "end_frame": 405},
+            {"kind": "exclude", "scene_id": "scene-2"},
+            {"kind": "exclude", "scene_id": "scene-3"},
+            {"kind": "include", "scene_id": "scene-1"},
+        ]
+        for change in changes:
+            state = self.call(self.base + "/edits", {"revision": state["revision"], "change": change}).json
+        job = self.call(self.base + "/jobs", {"revision": state["revision"], "request_key": "candidate-replaced"}).json
+        worker = Worker(self.store)
+        self.assertTrue(worker.run_once())
+        with av.open(str(self.store.artifact_path(self.project, job["id"]))) as container:
+            frames = list(container.decode(video=0))
+        self.assertEqual(len(frames), 30)
+        self.assertGreater(frames[15].to_ndarray(format="rgb24")[360, 640, 2], 180)
+        for _ in range(4):
+            self.assertTrue(worker.run_once())
+        self.assertFalse(worker.run_once())
+        state = self.call(self.base).json
+        import io
+        with Image.open(io.BytesIO(self.call(state["thumbnails"]["scene-scene-1"]["url"]).data)) as image:
+            self.assertGreater(image.getpixel((240, 135))[2], 180)
+        with self.store.lock:
+            self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM thumbnails WHERE project=?", (self.project,)).fetchone()[0], 4)
+        self.assertEqual(len(list((self.store.directory(self.project) / "thumbnails").glob("*.jpg"))), 4)
+        previous_url = state["thumbnails"]["scene-scene-1"]["url"]
+        changed = self.call(self.base + "/edits", {"revision": state["revision"], "change": {"kind": "trim", "scene_id": "scene-1", "start_frame": 0, "end_frame": 30}})
+        self.assertEqual(changed.status_code, 200)
+        self.assertEqual(self.call(previous_url).status_code, 404)
+        self.assertTrue(worker.run_once())
+        self.assertEqual(len(list((self.store.directory(self.project) / "thumbnails").glob("*.jpg"))), 4)
+        new_asset = self.upload(self.photo())
+        after_upload = self.call(self.base).json
+        self.assertTrue(any(item["source_id"] == new_asset for item in after_upload["candidates"]))
+        self.assertFalse(any(item["source_id"] == new_asset for item in after_upload["plan"]["scenes"]))
+        rebuilt = self.call(self.base + "/draft", {"revision": after_upload["revision"]}).json
+        self.assertTrue(any(item["source_id"] == new_asset for item in rebuilt["plan"]["scenes"]))
 
     def test_chunk_receipts_restart_truncates_uncommitted_tail(self):
         data = self.photo().read_bytes()

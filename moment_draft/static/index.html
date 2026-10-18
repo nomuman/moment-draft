@@ -11,39 +11,43 @@
   <header><a href="/" class="wordmark">moment draft</a><span>写真と動画から、その日の一本へ。</span></header>
   <main>
     <aside>
-      <button id="new-project" type="button">＋ 新しい作品</button>
+      <button id="new-project" type="button">新しい作品</button>
       <h2>このブラウザの作品</h2>
       <nav id="projects" aria-label="保存した作品"></nav>
       <p class="hint">同じブラウザで続きを編集できます。Cookieを削除すると、作品に戻れなくなります。</p>
     </aside>
     <article>
       <section class="intro">
-        <p class="eyebrow">LOCAL PREVIEW</p>
-        <h1>残したい時間を、<br>短い一本に。</h1>
-        <p>写真と動画を選ぶと、まずは約60秒の初案に。<br>場面を選び直して、あなたの記憶に近づけてください。</p>
+        <h1>残したい時間を、短い一本に。</h1>
+        <p>写真と動画を選ぶと、約60秒を目安に初案を作ります。<br>場面を選び直して、あなたの記憶に近づけてください。</p>
         <p id="expiry" class="retention">素材・完成動画は作品の作成から7日間保存します。編集による延長はありません。この試用版の暫定設定です。</p>
         <label class="file-button" for="files">写真・動画を選ぶ</label>
         <input id="files" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,.mov,.m4v" multiple>
         <p class="hint">100点まで・1点8GiBまで・合計20GiBまで。JPEG / PNG / WebP / SDRのMP4・MOV。縦素材は余白を付けて収めます。</p>
       </section>
       <p id="notice" role="status" aria-live="polite"></p>
-      <section id="upload-section" hidden>
-        <h2>素材</h2>
-        <p class="hint">送信途中で閉じた場合は、同じ原本を選び直すと確認済みの位置から続けます。読めなかった素材は、ほかの素材の初案作成を妨げません。</p>
-        <div id="assets"></div>
+      <section id="output-section" hidden>
+        <div class="section-heading"><h2>いまの一本</h2><span id="output-version"></span></div>
+        <p id="output-status" role="status"></p>
+        <video id="output" controls playsinline hidden></video>
+        <div id="jobs"></div>
+        <a id="download" class="file-button" hidden>同じMP4をダウンロード</a>
+        <p class="hint">試用の画質は720p・30fps・横長16:9です。プレビューとダウンロードは同じ動画です。</p>
       </section>
       <section id="editor" hidden>
         <div class="section-heading"><h2>場面を選ぶ</h2><span id="duration"></span></div>
-        <p class="hint">初案は素材の順序と長さから作成しています。表情や会話の内容を判定する機能はまだ使っていません。</p>
+        <p class="hint">写真は3秒、動画は約6秒ずつ、素材の時間順に候補を作っています。表情や会話の内容は判定していません。短い素材を繰り返して60秒に延ばすことはありません。</p>
+        <div class="music-control"><label for="music">BGM</label><select id="music"></select><p id="music-description" class="hint"></p><p class="hint">元の音に小さく重ねます。オリジナル音源・第三者のサンプル不使用・CC0-1.0。曲の選択も編集内容に保存されます。</p></div>
+        <div class="actions"><button id="render" type="button">この内容で動画を作る</button><button id="draft" class="secondary" type="button">全素材から初案を作り直す</button></div>
+        <p id="new-assets" class="hint" hidden>追加した素材も候補に入りました。各場面で差し替えるか、「全素材から初案を作り直す」で使えます。作り直すと場面の選択・前後調整が置き換わります。</p>
+        <button id="reload-edit" class="secondary" type="button" hidden>入力中の変更を破棄して最新内容を読み直す</button>
         <div id="scenes"></div>
-        <div class="actions"><button id="render" type="button">この内容で動画を作る</button><button id="draft" class="secondary" type="button">初案を作り直す</button></div>
-        <p class="hint">720p・30fps・横長16:9。元の音を残します。BGMは準備中です。</p>
+        <button id="retry-thumbnails" class="secondary" type="button" hidden>表示できなかった画像を再確認</button>
       </section>
-      <section id="output-section" hidden>
-        <h2>完成した動画</h2>
-        <div id="jobs"></div>
-        <video id="output" controls playsinline hidden></video>
-        <a id="download" class="file-button" hidden>同じMP4をダウンロード</a>
+      <section id="upload-section" hidden>
+        <details id="upload-details" open><summary>素材 <span id="upload-summary"></span></summary>
+        <p class="hint">送信途中で閉じた場合は、同じ原本を選び直すと確認済みの位置から続けます。読めなかった素材は、ほかの素材の初案作成を妨げません。</p>
+        <div id="assets"></div></details>
       </section>
     </article>
   </main>

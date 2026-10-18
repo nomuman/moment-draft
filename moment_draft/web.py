@@ -160,10 +160,15 @@ def create_app(projects):
 
     @app.get("/api/music")
     def music():
-        return jsonify(tracks=[])
+        from .music import catalog
+        return jsonify(tracks=catalog())
 
-    def private_response(project, asset=None, job=None):
-        path, _ = projects.private_file(owner(), project, asset, job)
+    @app.post("/api/projects/<project>/thumbnails/retry")
+    def retry_thumbnails(project):
+        return jsonify(projects.retry_thumbnails(owner(), project))
+
+    def private_response(project, asset=None, job=None, thumbnail=None):
+        path, _ = projects.private_thumbnail(owner(), project, thumbnail, request.args.get("version")) if thumbnail else projects.private_file(owner(), project, asset, job)
         size = path.stat().st_size
         start, end, status = 0, size - 1, 200
         requested = request.headers.get("Range")
@@ -179,7 +184,9 @@ def create_app(projects):
             if start > end or start >= size or not first and int(last) == 0:
                 return Response(status=416, headers={"Content-Range": f"bytes */{size}"})
             status = 206
-        if job:
+        if thumbnail:
+            mime = "image/jpeg"
+        elif job:
             mime = "video/mp4"
         else:
             with path.open("rb") as handle:
@@ -209,6 +216,10 @@ def create_app(projects):
                     yield data
 
         return Response(stream() if request.method != "HEAD" else b"", status=status, mimetype=mime, headers=response_headers)
+
+    @app.get("/api/projects/<project>/thumbnails/<slot>")
+    def thumbnail(project, slot):
+        return private_response(project, thumbnail=slot)
 
     @app.get("/api/projects/<project>/assets/<asset>/source")
     def source(project, asset):
