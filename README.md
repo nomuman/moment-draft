@@ -25,6 +25,8 @@ python3 -m moment_draft
 
 Dockerでの起動、公開試用の入場制限、公開前の確認も[運用手順](docs/operations.md)にあります。公開先へのデプロイと本番運用は未実施です。[APIと制限](docs/service-api.md)、[BGMの出典](docs/music.md)、[メモリ検証の範囲](docs/render-memory.md)を別に記録しています。
 
+実ブラウザ・実素材・Linuxコンテナでの確認と、公開前に残る判断は[公開準備の記録](docs/release-readiness.md)にまとめています。
+
 ## 初期の読込実験
 
 製品構成から分離した[ブラウザ読込実験](experiments/intake.html)があります。
