@@ -83,6 +83,7 @@ class AdmissionTests(unittest.TestCase):
         for route in ("/api/session", "/api/projects", "/static/app.js"):
             self.assertEqual(self.client.get(route, base_url=ORIGIN).status_code, 401)
         self.assertEqual(self.projects.db.execute("SELECT count(*) FROM sessions").fetchone()[0], 0)
+
         self.assertEqual(self.client.get("/static/admission.js", base_url=ORIGIN, buffered=True).status_code, 200)
 
     def test_success_issues_secure_cookie_and_restores_owner(self):
@@ -97,6 +98,20 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(self.projects.db.execute("SELECT count(*) FROM sessions").fetchone()[0], 1)
         self.assertEqual(self.admit(self.app.test_client()).status_code, 200)
         self.assertEqual(self.projects.db.execute("SELECT count(*) FROM sessions").fetchone()[0], 2)
+
+    def test_invitation_navigation_opens_admission_without_creating_session(self):
+        for site in ("cross-site", "same-site"):
+            with self.subTest(site=site):
+                response = self.client.get("/", base_url=ORIGIN, headers={"Sec-Fetch-Site": site, "Sec-Fetch-Mode": "navigate"}, buffered=True)
+                self.assertEqual(response.status_code, 200)
+                self.assertIn("アクセスコード".encode(), response.data)
+                self.assertNotIn("Set-Cookie", response.headers)
+                self.assertEqual(self.client.get("/api/session", base_url=ORIGIN, headers={"Sec-Fetch-Site": site}).status_code, 403)
+        self.assertEqual(self.projects.db.execute("SELECT count(*) FROM sessions").fetchone()[0], 0)
+        self.assertEqual(self.admit().status_code, 200)
+        response = self.client.get("/", base_url=ORIGIN, headers={"Sec-Fetch-Site": "cross-site"}, buffered=True)
+        self.assertIn("アクセスコード".encode(), response.data)
+        self.assertNotIn("Set-Cookie", response.headers)
 
     def test_bad_origin_host_fetch_metadata_and_insecure_transport(self):
         for headers in ({}, {"Origin": "https://other.example.org"}, {"Origin": ORIGIN, "Host": "other.example.org"}, {"Origin": ORIGIN, "Sec-Fetch-Site": "same-site"}, {"Origin": ORIGIN, "Sec-Fetch-Site": "cross-site"}):

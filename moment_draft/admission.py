@@ -68,9 +68,10 @@ def register_admission(app, projects):
 
     @app.before_request
     def admit():
+        invitation = request.path == "/" and request.method in {"GET", "HEAD"} and request.headers.get("Sec-Fetch-Site") in {"cross-site", "same-site"}
         if (request.host != host or not request.is_secure
                 or request.headers.get("Origin", config.origin) != config.origin
-                or request.headers.get("Sec-Fetch-Site") not in {None, "none", "same-origin"}):
+                or not invitation and request.headers.get("Sec-Fetch-Site") not in {None, "none", "same-origin"}):
             raise Problem("この起点からはアクセスできません。", 403)
         if request.path == "/api/admission":
             if request.method != "POST":
@@ -103,6 +104,8 @@ def register_admission(app, projects):
             return send_from_directory(static, request.path.rsplit("/", 1)[1])
         if request.path == "/healthz":
             return
+        if invitation:
+            return send_from_directory(static, "admission.html")
         if projects.session(request.cookies.get(COOKIE)) is not None:
             return
         if request.path == "/" and request.method in {"GET", "HEAD"}:

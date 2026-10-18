@@ -33,6 +33,8 @@ MOMENT_DATA_DIR="$PWD/.local/data" python -m scripts.release_check --mode local
 
 公開試用は `MOMENT_PUBLIC_TRIAL=1` で明示的に有効にする。`MOMENT_ACCESS_CODE` だけでは公開起動できない。`MOMENT_ORIGIN` は単一の正規 HTTPS ドメイン起点、`MOMENT_ACCESS_CODE` はランダム生成した32文字以上の値、`MOMENT_TRUSTED_PROXY` は直前の単一プロキシの IP にする。既定値や例示値をアクセスコードに使わない。`MOMENT_CONTAINER_LOCAL=1` と公開試用は併用できない。
 
+アクセスコードは `python3 -c 'import secrets; print(secrets.token_urlsafe(32))'` などで新しく生成する。生成した値は秘密として対象ホストへ設定し、文書やリポジトリに貼らない。起動時の文字数と文字種の検査は、ランダム性を証明しない。
+
 公開用の `--mode public` は実装と同じ設定検証を行う。TLS 終端、信頼するプロキシ、Secure Cookie、外部からの入場制御、実機の動作は `PENDING` と表示する。このスクリプトだけで公開可とは判定しない。ローカルコンテナの設定をそのまま公開に転用しない。
 
 公開前に次を決め、対象ホストで検証する。
