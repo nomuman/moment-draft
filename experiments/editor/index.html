@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="editor-capability" content="__CAPABILITY__">
+<title>動画の初案 | moment-draft</title>
+<link rel="stylesheet" href="/editor.css">
+<main>
+  <header>
+    <h1>残したい場面を、一本に。</h1>
+    <p>写真と動画を選ぶと、順番どおりに初案を作ります。場面を直してからプレビューを更新してください。</p>
+    <p class="muted">この試作は、このPCで指定した素材フォルダー内の原本だけを扱います。ファイル本体をブラウザから送信しません。</p>
+  </header>
+  <section class="selection" aria-label="素材の選択">
+    <label class="picker">素材を選ぶ<input id="files" type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,.mov,.m4v" aria-label="写真と動画を選ぶ"></label>
+    <span class="muted">1〜100点。選択順から最大12場面を使います。</span>
+  </section>
+  <p id="status" role="status" aria-live="polite">素材を選んでください。</p>
+  <p id="error" role="alert"></p>
+  <section id="workspace" hidden>
+    <div class="section-head">
+      <div><h2>場面を整える</h2><p id="duration" class="muted"></p></div>
+      <button id="refresh" type="button">プレビューを更新</button>
+    </div>
+    <ol id="scenes" aria-label="場面の並び"></ol>
+    <section class="output" aria-label="完成動画">
+      <h2>プレビューと保存</h2>
+      <video id="preview" controls playsinline preload="metadata" aria-label="完成動画のプレビュー"></video>
+      <a id="download" class="button" href="#" download="moment-draft.mp4" aria-disabled="true">MP4を保存</a>
+      <p class="muted">試作の書き出しは720p・30fps・H.264/AACです。画質や色の忠実度は未検証です。</p>
+      <p class="muted">BGMは未実装です。使用する曲とライセンスも未決定です。</p>
+    </section>
+  </section>
+</main>
+<script src="/editor.js" defer></script>
+</html>
