@@ -3,7 +3,7 @@ import json
 import re
 import secrets
 import threading
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -157,6 +157,8 @@ def handler_for(state):
                     except (OSError, KeyError):
                         return self._error(400, "素材を読み取れません。フォルダーを確認してください。")
                     with state.lock:
+                        if state.plan is not None:
+                            plan = replace(plan, revision=state.plan.revision + 1)
                         state.sources = sources
                         state.plan = plan
                         state.artifact = None

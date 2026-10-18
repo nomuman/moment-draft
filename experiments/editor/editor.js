@@ -54,6 +54,8 @@ function stale() {
   preview.pause();
   preview.removeAttribute('src');
   preview.load();
+  preview.hidden = true;
+  document.querySelector('#preview-note').textContent = '編集内容の動画はまだありません。「プレビューを更新」で確認できます。';
   download.removeAttribute('href');
   download.setAttribute('aria-disabled', 'true');
 }
@@ -77,7 +79,7 @@ function update(value, filesForSources = null) {
     const heading = document.createElement('h3');
     heading.textContent = `${index + 1}. ${source.name}`;
     const length = document.createElement('span');
-    length.textContent = `${(scene.kind === 'image' ? scene.duration_frames : scene.end_frame - scene.start_frame) / 30}秒`;
+    length.textContent = `${((scene.kind === 'image' ? scene.duration_frames : scene.end_frame - scene.start_frame) / 30).toFixed(1)}秒`;
     title.append(heading, length);
     item.append(title);
     const file = selectedFiles.get(source.id);
@@ -116,17 +118,20 @@ function update(value, filesForSources = null) {
       trim.className = 'trim';
       const start = document.createElement('input');
       const end = document.createElement('input');
-      for (const [input, number, name] of [[start, scene.start_frame, '開始フレーム'], [end, scene.end_frame, '終了フレーム']]) {
-        input.type = 'number'; input.min = '0'; input.max = String(source.duration_frames); input.step = '1'; input.value = String(number);
+      for (const [input, number, name] of [[start, scene.start_frame, '開始位置（秒）'], [end, scene.end_frame, '終了位置（秒）']]) {
+        input.type = 'number'; input.min = '0'; input.max = String(source.duration_frames / 30); input.step = '0.1'; input.value = String(Number((number / 30).toFixed(3)));
         const caption = document.createElement('label');
-        caption.textContent = name + '（30フレーム=1秒）';
+        caption.textContent = name;
         caption.append(input);
         trim.append(caption);
       }
       const apply = document.createElement('button');
       apply.className = 'secondary';
       apply.textContent = '前後を調整';
-      apply.addEventListener('click', () => change({kind: 'trim', scene_id: scene.id, start_frame: Number(start.value), end_frame: Number(end.value)}));
+      apply.addEventListener('click', () => {
+        if (!start.value.trim() || !end.value.trim()) return message('開始・終了位置を秒で入力してください。', true);
+        change({kind: 'trim', scene_id: scene.id, start_frame: Math.round(Number(start.value) * 30), end_frame: Math.round(Number(end.value) * 30)});
+      });
       trim.append(apply);
       controls.append(trim);
     }
@@ -136,6 +141,8 @@ function update(value, filesForSources = null) {
   if (value.render.status === 'ready' && value.render.revision === value.plan.revision) {
     const url = `/artifact/${value.render.artifact_id}.mp4?cap=${encodeURIComponent(capability)}`;
     preview.src = url;
+    preview.hidden = false;
+    document.querySelector('#preview-note').textContent = '表示中のプレビューと同じ動画を保存します。';
     download.href = url;
     download.setAttribute('aria-disabled', 'false');
   } else stale();

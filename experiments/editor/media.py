@@ -26,7 +26,7 @@ def fingerprint(path):
 
 
 def probe(path, source_id):
-    with av.open(str(path)) as container:
+    with av.open(str(path), options={"protocol_whitelist": "file,pipe"}) as container:
         video = next((stream for stream in container.streams if stream.type == "video"), None)
         if video is None:
             raise ValueError("映像を読み取れません。")
@@ -79,6 +79,8 @@ class Registry:
             if len(candidates) != 1:
                 raise ValueError(f"{name} を設定済みフォルダー内で一意に照合できません。")
             path = candidates[0]
+            if path.is_symlink() or not path.resolve().is_relative_to(self.root) or fingerprint(path) != (size, head, tail):
+                raise ValueError("原本が変更されました。素材を選び直してください。")
             if path in seen:
                 raise ValueError(f"{name} が重複しています。1回だけ選んでください。")
             seen.add(path)
@@ -160,6 +162,8 @@ def render(plan, registry, work_dir, ffmpeg):
         result = subprocess.run(args, capture_output=True, timeout=240, check=False)
         if result.returncode:
             raise ValueError("動画を書き出せませんでした。素材の形式と空き容量を確認してください。")
+        for scene in scenes:
+            registry.path(scene.source_id)
         verify_output(temporary, plan.frame_count)
         os.replace(temporary, target)
         manifest = {"artifact_path": str(target), "plan": asdict(plan), "sources": [asdict(source) for source in registry.sources.values()]}

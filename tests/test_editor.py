@@ -48,6 +48,12 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(plan.frame_count, 1800)
         self.assertEqual([scene.source_id for scene in plan.scenes], [str(i * 100 // 12) for i in range(12)])
 
+    def test_replace_rejects_non_string_source_ids(self):
+        plan = baseline(self.sources)
+        for value in ([], {}, None, 1):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                edit(plan, {"kind": "replace", "scene_id": "scene-1", "source_id": value}, self.sources)
+
 
 class MediaTests(unittest.TestCase):
     def setUp(self):
@@ -73,6 +79,17 @@ class MediaTests(unittest.TestCase):
             registry.path(source.id)
         with self.assertRaises(ValueError):
             registry.match([{**descriptor, "name": "../portrait.png"}])
+
+    def test_match_rejects_original_replaced_by_outside_symlink(self):
+        registry = Registry(self.root)
+        path = self.root / "portrait.png"
+        size, head, tail = fingerprint(path)
+        outside = Path(self.temp.name) / "outside.png"
+        Image.new("RGB", (192, 192), (0, 0, 255)).save(outside)
+        path.unlink()
+        path.symlink_to(outside)
+        with self.assertRaises(ValueError):
+            registry.match([{"name": path.name, "size": size, "head": head, "tail": tail}])
 
     def test_decoded_timeline_padding_and_audio(self):
         registry = Registry(self.root)
@@ -157,6 +174,15 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.call("/api/edit", {"revision": 1, "change": {"kind": "exclude", "scene_id": scene["id"]}})[0], 200)
         self.assertEqual(self.call(movie, token=False)[0], 404)
         self.assertEqual(self.call("/api/render", {"revision": 2})[0], 422)
+
+    def test_reselection_rejects_previous_plan_edits(self):
+        size, head, tail = fingerprint(self.path)
+        selection = {"files": [{"name": self.path.name, "size": size, "head": head, "tail": tail}]}
+        old = json.loads(self.call("/api/select", selection)[1])["plan"]
+        new = json.loads(self.call("/api/select", selection)[1])["plan"]
+        self.assertGreater(new["revision"], old["revision"])
+        stale = {"revision": old["revision"], "change": {"kind": "exclude", "scene_id": old["scenes"][0]["id"]}}
+        self.assertEqual(self.call("/api/edit", stale)[0], 409)
 
 
 if __name__ == "__main__":

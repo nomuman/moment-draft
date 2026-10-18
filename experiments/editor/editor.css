@@ -34,5 +34,6 @@ select, input[type=number] { min-height: 40px; border: 1px solid #778574; paddin
 .secondary:hover { color: white; }
 .output { border-top: 1px solid #c9cec6; padding-top: 30px; }
 #preview { display: block; width: min(100%, 800px); aspect-ratio: 16 / 9; background: #191e1a; margin: 16px 0; }
+#preview[hidden] { display: none; }
 ::selection { background: #d1e1cd; color: #1c3826; }
 @media (max-width: 540px) { main { padding: 26px 18px 60px; } #scenes { grid-template-columns: 1fr; } .trim { grid-template-columns: 1fr 1fr; } .trim button { grid-column: 1 / -1; } }

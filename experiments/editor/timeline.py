@@ -96,7 +96,10 @@ def edit(plan, change, sources):
     if kind in ("include", "exclude"):
         updated = replace(scene, included=kind == "include")
     elif kind == "replace":
-        source = source_by_id.get(change.get("source_id"))
+        source_id = change.get("source_id")
+        if not isinstance(source_id, str):
+            raise ValueError("差し替える素材を選んでください。")
+        source = source_by_id.get(source_id)
         if source is None or source.capacity < 1:
             raise ValueError("差し替える素材が見つかりません。")
         length = min(scene.length, source.capacity)
