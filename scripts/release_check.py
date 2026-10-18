@@ -47,8 +47,8 @@ def _check_storage(path: Path) -> list[Check]:
     if path.is_symlink() or not path.is_dir():
         return [Check("storage", "fail", "MOMENT_DATA_DIR must be an existing private directory")]
     info = path.stat()
-    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
-        privacy = Check("storage", "fail", "MOMENT_DATA_DIR must be owned by this user with no group or other access")
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        privacy = Check("storage", "fail", "MOMENT_DATA_DIR must be owned by this user with mode 0700")
     else:
         privacy = Check("storage", "pass", "Data directory ownership and mode are private")
     free = shutil.disk_usage(path).free

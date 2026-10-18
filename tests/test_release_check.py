@@ -56,6 +56,11 @@ class ReleaseCheckTests(unittest.TestCase):
         self.env["MOMENT_ORIGIN"] = "https://127.0.0.2"
         self.assertEqual(self.check("public")["origin"].status, "fail")
 
+    def test_storage_rejects_owner_without_write_access(self):
+        os.chmod(self.directory.name, 0o500)
+        self.addCleanup(os.chmod, self.directory.name, 0o700)
+        self.assertEqual(self.check()["storage"].status, "fail")
+
 
 if __name__ == "__main__":
     unittest.main()

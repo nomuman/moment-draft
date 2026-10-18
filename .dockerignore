@@ -4,7 +4,11 @@
 !scripts/
 !scripts/release_check.py
 !moment_draft/
-!moment_draft/**
+!moment_draft/*.py
+!moment_draft/static/
+!moment_draft/static/*.html
+!moment_draft/static/*.css
+!moment_draft/static/*.js
 **/__pycache__/
 **/*.pyc
 **/.DS_Store
