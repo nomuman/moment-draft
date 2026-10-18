@@ -1,6 +1,7 @@
 **
 !Dockerfile
 !requirements.txt
+!LICENSE
 !scripts/
 !scripts/release_check.py
 !moment_draft/

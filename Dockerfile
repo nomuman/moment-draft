@@ -18,6 +18,7 @@ RUN apt-get update \
     && chmod 0700 /data
 
 WORKDIR /app
+COPY LICENSE ./LICENSE
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY --chown=moment:moment moment_draft/ ./moment_draft/
