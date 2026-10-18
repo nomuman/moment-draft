@@ -109,7 +109,7 @@ class ShutdownTests(unittest.TestCase):
                 native.wait(timeout=2)
             dispatcher.add_task(Mock(service=service))
             self.assertTrue(entered.wait(2))
-            server = Mock(task_dispatcher=dispatcher)
+            server = Mock(task_dispatcher=dispatcher, active_channels={})
             try:
                 with self.assertRaises(RuntimeError):
                     stop_service(server, Mock(), Mock(), projects, timeout=.01)

@@ -4,6 +4,7 @@ import os
 import signal
 
 from waitress import create_server
+from waitress.wasyncore import ExitNow
 
 from .config import Config
 from .projects import Projects
@@ -14,6 +15,8 @@ from .worker import Worker
 
 def stop_service(server, retention, worker, projects, timeout):
     server.close()
+    for channel in list(server.active_channels.values()):
+        channel.handle_close()
     retention.stop()
     worker.stop()
     server.task_dispatcher.shutdown(timeout=timeout)
@@ -50,7 +53,7 @@ def main():
     server = create_server(app, host=host, port=port, threads=6, max_request_body_size=config.chunk_bytes + 1, max_request_header_size=16384, connection_limit=32, channel_timeout=60, clear_untrusted_proxy_headers=True, **proxy)
 
     def stop(signum, frame):
-        raise KeyboardInterrupt()
+        raise ExitNow()
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
@@ -60,7 +63,7 @@ def main():
     try:
         print(f"moment draft {config.origin}", flush=True)
         server.run()
-    except KeyboardInterrupt:
+    except (ExitNow, KeyboardInterrupt):
         pass
     finally:
         stop_service(server, retention, worker, projects, config.probe_seconds + 60)
