@@ -1,5 +1,3 @@
-"""Original, deterministic instrumental music for local video drafts."""
-
 from __future__ import annotations
 
 import math
