@@ -168,8 +168,12 @@ def create_app(projects):
         return jsonify(projects.retry_thumbnails(owner(), project))
 
     def private_response(project, asset=None, job=None, thumbnail=None):
-        path, _ = projects.private_thumbnail(owner(), project, thumbnail, request.args.get("version")) if thumbnail else projects.private_file(owner(), project, asset, job)
-        size = path.stat().st_size
+        if thumbnail:
+            content, _ = projects.private_thumbnail(owner(), project, thumbnail, request.args.get("version"))
+            size = len(content)
+        else:
+            path, _ = projects.private_file(owner(), project, asset, job)
+            size = path.stat().st_size
         start, end, status = 0, size - 1, 200
         requested = request.headers.get("Range")
         if requested:
@@ -197,6 +201,8 @@ def create_app(projects):
             response_headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         if job and request.args.get("download") == "1":
             response_headers["Content-Disposition"] = 'attachment; filename="moment-draft.mp4"'
+        if thumbnail:
+            return Response(content[start:end + 1], status=status, mimetype=mime, headers=response_headers)
         owner_id = owner()
 
         def stream():

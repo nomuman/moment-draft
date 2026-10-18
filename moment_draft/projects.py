@@ -426,7 +426,11 @@ class Projects:
             path = self.thumbnail_path(project, slot)
             if path.is_symlink() or not path.is_file():
                 raise Problem("画像を表示できません。", 404)
-            return path, "preview.jpg"
+            with path.open("rb") as handle:
+                content = handle.read(1024 * 1024 + 1)
+            if len(content) > 1024 * 1024:
+                raise Problem("画像が大きすぎます。", 413)
+            return content, "preview.jpg"
 
     def enqueue(self, owner, project, revision, key):
         if type(revision) is not int or not isinstance(key, str) or not 8 <= len(key) <= 128:

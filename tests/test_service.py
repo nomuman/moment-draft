@@ -1,4 +1,5 @@
 import hashlib
+import io
 import os
 import shutil
 import subprocess
@@ -229,7 +230,6 @@ class ServiceTests(unittest.TestCase):
         scene_thumb = state["thumbnails"]["scene-scene-1"]["url"]
         response = self.call(scene_thumb)
         self.assertEqual(response.status_code, 200)
-        import io
         with Image.open(io.BytesIO(response.data)) as image:
             self.assertEqual(image.size, (480, 270))
             self.assertLess(max(image.getpixel((10, 135))), 25)
@@ -257,6 +257,49 @@ class ServiceTests(unittest.TestCase):
             exhausted = self.call(self.base + "/thumbnails/retry", {}).json["thumbnails"]
             self.assertTrue(all(item["state"] == "failed" and not item["retryable"] for item in exhausted.values()))
             self.assertFalse(worker.run_once())
+
+    def test_thumbnail_response_keeps_validated_version_when_slot_is_replaced(self):
+        asset = self.upload(self.photo())
+        self.call(self.base + "/draft", {"revision": 0})
+        slot = "scene-scene-1"
+        red_path, blue_path = self.root / "red.jpg", self.root / "blue.jpg"
+        Image.new("RGB", (480, 270), "red").save(red_path)
+        Image.new("RGB", (480, 270), "blue").save(blue_path)
+        red = red_path.read_bytes()
+        blue = blue_path.read_bytes()
+        self.store.finish_thumbnail(self.store.claim_thumbnail(), red_path)
+        old_url = self.call(self.base).json["thumbnails"][slot]["url"]
+        original = self.store.private_thumbnail
+        new_url = []
+
+        def replace_after_validation(*args):
+            result = original(*args)
+            with self.store.transaction() as db:
+                self.store.queue_thumbnail(db, self.project, slot, asset, 1)
+            self.store.finish_thumbnail(self.store.claim_thumbnail(), blue_path)
+            new_url.append(self.call(self.base).json["thumbnails"][slot]["url"])
+            return result
+
+        with patch.object(self.store, "private_thumbnail", side_effect=replace_after_validation):
+            response = self.call(old_url)
+        self.assertEqual(response.status_code, 200)
+        with Image.open(io.BytesIO(response.data)) as image:
+            self.assertGreater(image.getpixel((240, 135))[0], 180)
+        self.assertEqual(response.data, red)
+        self.assertEqual(response.headers["Content-Length"], str(len(red)))
+        self.assertEqual(self.call(old_url).status_code, 404)
+        self.assertEqual(self.call(new_url[0]).data, blue)
+        head = self.call(new_url[0], method="HEAD")
+        self.assertEqual(head.data, b"")
+        self.assertEqual(head.headers["Content-Length"], str(len(blue)))
+        partial = self.call(new_url[0], headers={"Range": "bytes=0-19"})
+        self.assertEqual(partial.data, blue[:20])
+        self.assertEqual(partial.headers["Content-Range"], f"bytes 0-19/{len(blue)}")
+        rejected = self.call(new_url[0], headers={"Range": "bytes=999999-"})
+        self.assertEqual(rejected.status_code, 416)
+        self.assertEqual(rejected.headers["Content-Range"], f"bytes */{len(blue)}")
+        self.store.thumbnail_path(self.project, slot).write_bytes(b"x" * (1024 * 1024 + 1))
+        self.assertEqual(self.call(new_url[0]).status_code, 413)
 
     def test_music_native_mix_immutable_revisions_and_reload(self):
         self.upload(self.photo())
@@ -338,7 +381,6 @@ class ServiceTests(unittest.TestCase):
             self.assertTrue(worker.run_once())
         self.assertFalse(worker.run_once())
         state = self.call(self.base).json
-        import io
         with Image.open(io.BytesIO(self.call(state["thumbnails"]["scene-scene-1"]["url"]).data)) as image:
             self.assertGreater(image.getpixel((240, 135))[2], 180)
         with self.store.lock:
