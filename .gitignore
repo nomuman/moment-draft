@@ -21,3 +21,11 @@ reports/
 *.mp3
 *.wav
 *.zip
+*.[jJ][pP][gG]
+*.[jJ][pP][eE][gG]
+*.[pP][nN][gG]
+*.[hH][eE][iI][cC]
+*.[hH][eE][iI][fF]
+*.[mM][oO][vV]
+*.[mM][pP]4
+moment-draft-intake-private*.json
