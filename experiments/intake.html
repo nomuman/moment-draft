@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src blob: data:; media-src blob:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>素材の読込検証 | moment-draft</title>
+<style>
+  :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", sans-serif; color: #292d29; background: #fafaf7; accent-color: #315b45; }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  main { max-width: 1120px; margin: auto; padding: 40px 28px 80px; }
+  header { border-bottom: 1px solid #c9cec6; padding-bottom: 28px; }
+  h1 { font-size: 28px; letter-spacing: -.02em; font-weight: 600; margin: 24px 0 12px; }
+  h2 { font-size: 18px; margin: 28px 0 12px; }
+  p { line-height: 1.8; max-width: 72ch; margin: 8px 0; }
+  small, .muted { color: #586057; }
+  .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 24px 0; }
+  button, .picker { font: inherit; font-size: 14px; padding: 11px 16px; min-height: 44px; border: 1px solid #778574; border-radius: 3px; background: transparent; color: inherit; cursor: pointer; }
+  .picker { background: #315b45; color: white; border-color: #315b45; position: relative; overflow: hidden; }
+  .picker input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; }
+  button:hover { background: #e5eade; }
+  .picker:hover { background: #244633; }
+  button:disabled { opacity: .5; cursor: default; }
+  button:focus-visible, .picker:focus-within, video:focus-visible { outline: 3px solid #8a5523; outline-offset: 4px; }
+  #status { min-height: 28px; font-variant-numeric: tabular-nums; }
+  #notice { color: #843b26; }
+  #assets { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 32px 24px; margin-top: 28px; }
+  article { min-width: 0; border-top: 1px solid #c9cec6; padding-top: 16px; }
+  article h2 { font-size: 15px; margin: 12px 0 8px; overflow-wrap: anywhere; }
+  article p { font-size: 13px; }
+  article img, article video { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: contain; background: #191e1a; }
+  article button { margin-top: 12px; }
+  .frame { margin-top: 12px; }
+  .error { color: #843b26; }
+  #summary { border-top: 1px solid #c9cec6; padding-top: 16px; }
+  ::selection { background: #d1e1cd; color: #1c3826; }
+  @media (max-width: 540px) { main { padding: 24px 18px 60px; } h1 { font-size: 24px; } #assets { grid-template-columns: 1fr; } }
+</style>
+<main>
+  <header>
+    <span>moment-draft</span>
+    <h1>写真と動画を、まず確かめる。</h1>
+    <p>1イベント分の素材を100点以内で選び、向き・色・動画の音を確認します。縦素材は余白に収めます。</p>
+    <p class="muted">このページは読込検証用です。自動選別・編集・書き出しはまだありません。素材はこのブラウザ内で扱い、外部へ送りません。</p>
+  </header>
+  <div class="actions">
+    <label class="picker">写真・動画を選ぶ<input id="files" type="file" multiple accept="image/*,video/*,.heic,.heif,.mov,.m4v" aria-label="写真・動画を選ぶ"></label>
+    <button id="download" disabled>検証結果を保存</button>
+    <button id="clear" disabled>素材を外す</button>
+  </div>
+  <p id="status" role="status" aria-live="polite">素材を選ぶと、ここに読込結果を表示します。</p>
+  <p id="notice" role="alert"></p>
+  <p id="summary" hidden></p>
+  <section id="assets" aria-label="選んだ素材"></section>
+  <h2>確認すること</h2>
+  <p class="muted">写真や動画の上下、縦横、色が原本と一致するかを見てください。動画は再生して声・周囲の音を確かめ、任意の位置で画像を抽出できます。</p>
+  <p class="muted">表示寸法はブラウザが報告する値です。コーデック・HDR・音声トラックの有無はこの検証では特定しません。読めない素材も件数に含めます。</p>
+  <p class="muted">読込時間はファイル選択イベントからメタデータ確認までです。初案までの時間ではありません。保存する結果にはファイル名が含まれます。</p>
+</main>
+<script>
+  const filesInput = document.querySelector('#files');
+  const assets = document.querySelector('#assets');
+  const status = document.querySelector('#status');
+  const notice = document.querySelector('#notice');
+  const summary = document.querySelector('#summary');
+  const download = document.querySelector('#download');
+  const clear = document.querySelector('#clear');
+  let run = 0;
+  let records = [];
+  let startedAt = 0;
+  let selectionToMetadataMs = null;
+  let urls = [];
+  const pending = new Set();
+
+  function reset() {
+    run++;
+    for (const cancel of [...pending]) cancel();
+    for (const video of assets.querySelectorAll('video')) {
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+    }
+    for (const url of urls) URL.revokeObjectURL(url);
+    urls = [];
+    records = [];
+    selectionToMetadataMs = null;
+    assets.replaceChildren();
+    summary.hidden = true;
+    notice.textContent = '';
+    status.textContent = '素材を選ぶと、ここに読込結果を表示します。';
+    download.disabled = true;
+    clear.disabled = true;
+  }
+
+  function waitFor(element, event) {
+    return new Promise((resolve, reject) => {
+      const finish = (error) => {
+        clearTimeout(timer);
+        element.removeEventListener(event, success);
+        element.removeEventListener('error', failure);
+        pending.delete(cancel);
+        error ? reject(error) : resolve();
+      };
+      const success = () => finish();
+      const failure = () => finish(new Error('このブラウザでは読み込めませんでした。原本を別のアプリでも確認してください。'));
+      const cancel = () => finish(new Error('cancelled'));
+      const timer = setTimeout(() => finish(new Error('15秒以内に読み込めませんでした。点数を減らすか、形式を確認してください。')), 15000);
+      pending.add(cancel);
+      element.addEventListener(event, success, { once: true });
+      element.addEventListener('error', failure, { once: true });
+    });
+  }
+
+  function text(tag, value, parent) {
+    const node = document.createElement(tag);
+    node.textContent = value;
+    parent.append(node);
+    return node;
+  }
+
+  async function inspect(file, index, currentRun) {
+    const start = performance.now();
+    const kind = file.type.startsWith('video/') || /\.(mp4|mov|m4v|webm)$/i.test(file.name)
+      ? 'video' : file.type.startsWith('image/') || /\.(jpe?g|png|heic|heif|webp|gif|avif)$/i.test(file.name) ? 'image' : 'unknown';
+    const record = { id: index + 1, name: file.name, kind, sizeBytes: file.size, declaredType: file.type || null, status: 'loading', width: null, height: null, durationSeconds: null, metadataMs: null, extractedFrames: [] };
+    records.push(record);
+    const article = document.createElement('article');
+    assets.append(article);
+    text('h2', file.name, article);
+    text('p', `${kind === 'video' ? '動画' : kind === 'image' ? '写真' : '種類不明'} · ${(file.size / 1000000).toFixed(2)} MB`, article);
+    const result = text('p', '読込中…', article);
+    try {
+      if (kind === 'unknown') throw new Error('写真・動画の形式を確認できませんでした。');
+      const element = document.createElement(kind === 'video' ? 'video' : 'img');
+      if (kind === 'video') {
+        element.controls = true;
+        element.preload = 'metadata';
+        element.playsInline = true;
+      } else {
+        element.alt = file.name;
+      }
+      const ready = waitFor(element, kind === 'video' ? 'loadedmetadata' : 'load');
+      const url = URL.createObjectURL(file);
+      urls.push(url);
+      element.src = url;
+      article.prepend(element);
+      await ready;
+      if (currentRun !== run) return;
+      record.width = kind === 'video' ? element.videoWidth : element.naturalWidth;
+      record.height = kind === 'video' ? element.videoHeight : element.naturalHeight;
+      if (!record.width || !record.height) throw new Error('画像・映像の寸法を取得できませんでした。原本の形式を確認してください。');
+      record.durationSeconds = kind === 'video' && Number.isFinite(element.duration) ? element.duration : null;
+      record.status = 'metadata-loaded';
+      record.metadataMs = Math.round(performance.now() - start);
+      result.textContent = `${record.width} × ${record.height}${kind === 'video' ? ` · ${record.durationSeconds === null ? '長さ不明' : record.durationSeconds.toFixed(2) + '秒'}` : ''} · 読込 ${record.metadataMs} ms`;
+      const capture = text('button', kind === 'video' ? '今の位置から画像を抽出' : '確認用画像を抽出', article);
+      const extraction = text('p', '', article);
+      capture.addEventListener('click', async () => {
+        capture.disabled = true;
+        extraction.textContent = '画像を抽出中…';
+        try {
+          if (kind === 'video' && (element.readyState < 2 || element.seeking)) {
+            await waitFor(element, element.seeking ? 'seeked' : 'loadeddata');
+          }
+          if (currentRun !== run) return;
+          const timeSeconds = kind === 'video' ? element.currentTime : null;
+          const extractionStart = performance.now();
+          const scale = Math.min(1, 960 / Math.max(record.width, record.height));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(record.width * scale));
+          canvas.height = Math.max(1, Math.round(record.height * scale));
+          canvas.getContext('2d').drawImage(element, 0, 0, canvas.width, canvas.height);
+          const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', .85));
+          if (!blob) throw new Error('画像を抽出できませんでした。');
+          if (currentRun !== run) return;
+          const frame = document.createElement('img');
+          const frameUrl = URL.createObjectURL(blob);
+          urls.push(frameUrl);
+          frame.src = frameUrl;
+          frame.alt = `${file.name}の抽出画像`;
+          frame.className = 'frame';
+          article.querySelector('.frame')?.remove();
+          article.append(frame);
+          const observation = { timeSeconds, width: canvas.width, height: canvas.height, sizeBytes: blob.size, extractionMs: Math.round(performance.now() - extractionStart) };
+          record.extractedFrames.push(observation);
+          extraction.textContent = `${canvas.width} × ${canvas.height}のJPEGを抽出。${kind === 'video' ? observation.timeSeconds.toFixed(2) + '秒の位置。' : ''}向き・色を原本と比較してください。`;
+        } catch (error) {
+          if (currentRun === run) extraction.textContent = error.message;
+        } finally {
+          capture.disabled = false;
+        }
+      });
+    } catch (error) {
+      if (currentRun !== run) return;
+      record.status = 'failed';
+      record.metadataMs = Math.round(performance.now() - start);
+      record.error = error.message;
+      article.querySelector('img, video')?.remove();
+      result.textContent = error.message;
+      result.className = 'error';
+    }
+  }
+
+  filesInput.addEventListener('change', async () => {
+    const selected = [...filesInput.files];
+    reset();
+    filesInput.value = '';
+    if (!selected.length) return;
+    if (selected.length > 100) {
+      notice.textContent = '今回の検証は100点以内です。素材を選び直してください。';
+      return;
+    }
+    const currentRun = run;
+    startedAt = performance.now();
+    clear.disabled = false;
+    for (const [index, file] of selected.entries()) {
+      status.textContent = `${selected.length}点中 ${index + 1}点目を確認中…`;
+      await inspect(file, index, currentRun);
+      if (currentRun !== run) return;
+    }
+    selectionToMetadataMs = Math.round(performance.now() - startedAt);
+    const failed = records.filter(record => record.status === 'failed').length;
+    const videoSeconds = records.reduce((sum, record) => sum + (record.durationSeconds || 0), 0);
+    summary.textContent = `写真 ${records.filter(record => record.kind === 'image').length}点 · 動画 ${records.filter(record => record.kind === 'video').length}点 · その他 ${records.filter(record => record.kind === 'unknown').length}点 · 合計 ${(selected.reduce((sum, file) => sum + file.size, 0) / 1000000).toFixed(2)} MB · 読込済み動画 ${videoSeconds.toFixed(2)}秒`;
+    summary.hidden = false;
+    status.textContent = `${selected.length}点の確認が終了しました。読込失敗 ${failed}点。素材選択からメタデータ確認まで ${selectionToMetadataMs} ms。`;
+    download.disabled = false;
+  });
+
+  clear.addEventListener('click', reset);
+  download.addEventListener('click', () => {
+    const report = { schemaVersion: 1, experiment: 'browser-intake', synthetic: null, capturedAt: new Date().toISOString(), userAgent: navigator.userAgent, selectionToMetadataMs, initialDraftMs: null, apiRequests: 0, cost: null, notes: ['読込・抽出のみ。自動初案・音の確認・HDRの色・本人の満足は未検証。', 'ファイル名を含むローカル検証結果。公開しないこと。'], assets: records };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'moment-draft-intake-private.json';
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+  window.addEventListener('pagehide', reset);
+</script>
+</html>
