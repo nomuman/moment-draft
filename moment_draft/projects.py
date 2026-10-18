@@ -12,6 +12,8 @@ from dataclasses import asdict
 
 from . import timeline
 
+SESSION_LIMIT = 1000
+
 
 class Problem(Exception):
     def __init__(self, message, status=400):
@@ -50,6 +52,7 @@ class Projects:
             self.volume_lock.close()
             raise RuntimeError("この保存先では既にサービスが動作しています。") from None
         self.lock = threading.RLock()
+        self.native_lock = threading.Lock()
         self.uploads = {}
         self.db = sqlite3.connect(self.root / "state.sqlite3", check_same_thread=False, isolation_level=None)
         self.db.row_factory = sqlite3.Row
@@ -63,6 +66,7 @@ class Projects:
             CREATE TABLE IF NOT EXISTS chunks (asset TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE, offset INTEGER NOT NULL, length INTEGER NOT NULL, digest TEXT NOT NULL, PRIMARY KEY(asset, offset));
             CREATE TABLE IF NOT EXISTS revisions (project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, sequence INTEGER NOT NULL, plan TEXT NOT NULL, music TEXT NOT NULL, PRIMARY KEY(project, sequence));
             CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, revision INTEGER NOT NULL, request_key TEXT NOT NULL, payload_hash TEXT NOT NULL, snapshot TEXT NOT NULL, state TEXT NOT NULL, attempt INTEGER NOT NULL DEFAULT 0, token TEXT, cancel INTEGER NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, error TEXT, created REAL NOT NULL, UNIQUE(project, request_key));
+            CREATE TABLE IF NOT EXISTS thumbnails (project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, slot TEXT NOT NULL, source TEXT NOT NULL, frame INTEGER NOT NULL, state TEXT NOT NULL, token TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(project, slot));
             CREATE INDEX IF NOT EXISTS projects_owner ON projects(owner);
             CREATE INDEX IF NOT EXISTS jobs_queue ON jobs(state, created);
         """)
@@ -96,6 +100,7 @@ class Projects:
         with self.transaction() as db:
             db.execute("UPDATE jobs SET state='failed', error='処理が中断されました。再試行できます。', token=NULL WHERE state='running'")
             db.execute("UPDATE assets SET state='receiving', error=NULL WHERE state='verifying'")
+            db.execute("UPDATE thumbnails SET state=CASE WHEN attempts<2 THEN 'queued' ELSE 'failed' END WHERE state='working'")
             for row in db.execute("SELECT * FROM assets WHERE state='receiving'"):
                 path = self.asset_path(row["project"], row["id"])
                 if not path.exists() and row["offset"]:
@@ -126,6 +131,8 @@ class Projects:
         token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         owner = hashlib.sha256(token.encode()).hexdigest()
         with self.transaction() as db:
+            if db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] >= SESSION_LIMIT:
+                raise Problem("利用できるブラウザの上限です。管理者による保存期限後の整理をお待ちください。", 429)
             db.execute("INSERT INTO sessions VALUES(?,?,?)", (owner, csrf, self.clock()))
         return token, {"owner": owner, "csrf": csrf}
 
@@ -252,7 +259,26 @@ class Projects:
             db.execute("UPDATE assets SET offset=?,error=NULL WHERE id=?", (offset + len(data), asset))
         return {"offset": offset + len(data), "digest": digest}
 
+    @contextmanager
+    def native_slot(self):
+        acquired = self.native_lock.acquire(blocking=False)
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                self.native_lock.release()
+
     def finish(self, owner, project, asset):
+        with self.native_slot() as acquired:
+            if not acquired:
+                with self.lock:
+                    row = self.asset(self.db, owner, project, asset)
+                    if row["state"] == "ready":
+                        return self.public_asset(row)
+                raise Problem("動画や素材を処理中です。送信済みの素材は残っています。処理後に確認を再試行してください。", 429)
+            return self.verify_asset(owner, project, asset)
+
+    def verify_asset(self, owner, project, asset):
         from .media import inspect
         with self.transaction() as db:
             row = self.asset(db, owner, project, asset)
@@ -272,6 +298,7 @@ class Projects:
             with self.transaction() as db:
                 self.owned(db, owner, project)
                 db.execute("UPDATE assets SET state='ready',metadata=?,identity=?,digest=?,error=NULL WHERE id=? AND state='verifying'", (encoded(source), encoded(original), digest, asset))
+                self.queue_thumbnail(db, project, "asset-" + asset, asset, 0)
         except Exception:
             with self.transaction() as db:
                 db.execute("UPDATE assets SET state='failed',error=? WHERE id=?", ("素材を確認できません。JPEG・PNG・WebPまたはSDRのMP4・MOVを選んでください。", asset))
@@ -291,6 +318,9 @@ class Projects:
             revision = self.db.execute("SELECT plan,music FROM revisions WHERE project=? AND sequence=?", (project, row["revision"])).fetchone()
             result["plan"] = json.loads(revision["plan"]) if revision else None
             result["music"] = json.loads(revision["music"]) if revision else {"id": "off", "level": 0}
+            sources = self.sources(self.db, project)
+            result["candidates"] = [asdict(item) for item in timeline.candidates(sources)]
+            result["thumbnails"] = {item["slot"]: {"state": item["state"], "retryable": item["state"] == "failed" and item["attempts"] < 2, "url": f"/api/projects/{project}/thumbnails/{item['slot']}?version={item['token']}" if item["state"] == "ready" else None} for item in self.db.execute("SELECT * FROM thumbnails WHERE project=?", (project,))}
             result["jobs"] = [self.public_job(r) for r in self.db.execute("SELECT * FROM jobs WHERE project=? ORDER BY created DESC", (project,))]
             completed = next((job for job in result["jobs"] if job["state"] == "succeeded" and job["revision"] == row["revision"]), None)
             result["artifact"] = f"/api/projects/{project}/jobs/{completed['id']}/artifact" if completed else None
@@ -307,23 +337,100 @@ class Projects:
             if row["revision"] != expected:
                 raise Problem("別の画面で編集されました。最新の内容を読み直してください。", 409)
             sources = self.sources(db, project)
+            revision = db.execute("SELECT plan,music FROM revisions WHERE project=? AND sequence=?", (project, expected)).fetchone()
+            music = json.loads(revision["music"]) if revision else {"id": "off", "level": 0}
             try:
                 if change is None:
                     plan = timeline.baseline(sources)
                 else:
-                    revision = db.execute("SELECT plan FROM revisions WHERE project=? AND sequence=?", (project, expected)).fetchone()
                     if revision is None:
                         raise Problem("先に初案を作ってください。", 409)
-                    plan = timeline.edit(timeline.from_dict(json.loads(revision[0])), change, sources)
+                    plan = timeline.from_dict(json.loads(revision["plan"]))
+                    if change.get("kind") == "music":
+                        from .music import catalog
+                        track = change.get("id")
+                        if not isinstance(track, str) or track not in {"off", *(item["id"] for item in catalog())}:
+                            raise ValueError("BGMを選び直してください。")
+                        music = {"id": track, "level": 0 if track == "off" else .18}
+                    else:
+                        plan = timeline.edit(plan, change, sources)
             except ValueError as exc:
                 raise Problem(str(exc)) from exc
             data = asdict(plan)
             data["revision"] = expected + 1
             if plan.frame_count > 3600:
                 raise Problem("書き出しは120秒までです。")
-            db.execute("INSERT INTO revisions VALUES(?,?,?,?)", (project, expected + 1, encoded(data), encoded({"id": "off", "level": 0})))
+            db.execute("INSERT INTO revisions VALUES(?,?,?,?)", (project, expected + 1, encoded(data), encoded(music)))
+            active_slots = set()
+            for scene in plan.scenes:
+                slot = "scene-" + scene.id
+                active_slots.add(slot)
+                self.queue_thumbnail(db, project, slot, scene.source_id, scene.start_frame)
+            for item in db.execute("SELECT slot FROM thumbnails WHERE project=? AND slot LIKE 'scene-%'", (project,)).fetchall():
+                if item["slot"] not in active_slots:
+                    db.execute("DELETE FROM thumbnails WHERE project=? AND slot=?", (project, item["slot"]))
+                    self.thumbnail_path(project, item["slot"]).unlink(missing_ok=True)
             db.execute("UPDATE projects SET revision=? WHERE id=?", (expected + 1, project))
         return self.view(owner, project)
+
+    def thumbnail_path(self, project, slot):
+        return self.directory(project) / "thumbnails" / (slot + ".jpg")
+
+    def queue_thumbnail(self, db, project, slot, source, frame):
+        current = db.execute("SELECT source,frame FROM thumbnails WHERE project=? AND slot=?", (project, slot)).fetchone()
+        if current and current["source"] == source and current["frame"] == frame:
+            return
+        db.execute("INSERT INTO thumbnails VALUES(?,?,?,?,'queued',?,0) ON CONFLICT(project,slot) DO UPDATE SET source=excluded.source,frame=excluded.frame,state='queued',token=excluded.token,attempts=0", (project, slot, source, frame, secrets.token_hex(8)))
+
+    def claim_thumbnail(self):
+        with self.transaction() as db:
+            row = db.execute("SELECT t.* FROM thumbnails t JOIN projects p ON p.id=t.project WHERE t.state='queued' AND p.revision>0 AND p.expires>? ORDER BY CASE WHEN t.slot LIKE 'scene-%' THEN 0 ELSE 1 END,p.created LIMIT 1", (self.clock(),)).fetchone()
+            if row is None:
+                return None
+            db.execute("UPDATE thumbnails SET state='working',attempts=attempts+1 WHERE project=? AND slot=?", (row["project"], row["slot"]))
+            asset = db.execute("SELECT * FROM assets WHERE project=? AND id=? AND state='ready'", (row["project"], row["source"])).fetchone()
+            return {**dict(row), "asset": dict(asset)}
+
+    def thumbnail_active(self, task):
+        with self.lock:
+            return bool(self.db.execute("SELECT 1 FROM thumbnails t JOIN projects p ON p.id=t.project WHERE t.project=? AND t.slot=? AND t.token=? AND t.state='working' AND p.expires>?", (task["project"], task["slot"], task["token"], self.clock())).fetchone())
+
+    def finish_thumbnail(self, task, temporary=None):
+        with self.transaction() as db:
+            if not self.thumbnail_active(task):
+                db.execute("UPDATE thumbnails SET state='failed' WHERE project=? AND slot=? AND token=? AND state='working'", (task["project"], task["slot"], task["token"]))
+                return
+            if temporary:
+                target = self.thumbnail_path(task["project"], task["slot"])
+                target.parent.mkdir(exist_ok=True, mode=0o700)
+                os.replace(temporary, target)
+                with target.open("rb") as handle:
+                    os.fsync(handle.fileno())
+                sync_directory(target.parent)
+            db.execute("UPDATE thumbnails SET state=? WHERE project=? AND slot=? AND token=?", ("ready" if temporary else "failed", task["project"], task["slot"], task["token"]))
+
+    def retry_thumbnails(self, owner, project):
+        with self.transaction() as db:
+            self.owned(db, owner, project)
+            db.execute("UPDATE thumbnails SET state='queued' WHERE project=? AND state='failed' AND attempts<2", (project,))
+        return self.view(owner, project)
+
+    def private_thumbnail(self, owner, project, slot, token):
+        with self.lock:
+            self.owned(self.db, owner, project)
+            row = self.db.execute("SELECT * FROM thumbnails WHERE project=? AND slot=? AND token=? AND state='ready'", (project, slot, token)).fetchone()
+            if row is None:
+                raise Problem("画像はまだ準備中です。", 404)
+            asset = self.asset(self.db, owner, project, row["source"])
+            self.checked_source(project, asset)
+            path = self.thumbnail_path(project, slot)
+            if path.is_symlink() or not path.is_file():
+                raise Problem("画像を表示できません。", 404)
+            with path.open("rb") as handle:
+                content = handle.read(1024 * 1024 + 1)
+            if len(content) > 1024 * 1024:
+                raise Problem("画像が大きすぎます。", 413)
+            return content, "preview.jpg"
 
     def enqueue(self, owner, project, revision, key):
         if type(revision) is not int or not isinstance(key, str) or not 8 <= len(key) <= 128:
@@ -466,10 +573,13 @@ class Projects:
                     continue
                 if db.execute("SELECT 1 FROM assets WHERE project=? AND state='verifying'", (project,)).fetchone():
                     continue
+                if self.native_lock.locked() or db.execute("SELECT 1 FROM thumbnails WHERE project=? AND state='working'", (project,)).fetchone():
+                    continue
                 directory = self.directory(project)
                 if directory.is_symlink():
                     raise Problem("保存フォルダーを安全に確認できません。", 409)
                 if directory.exists():
                     shutil.rmtree(directory)
                 db.execute("DELETE FROM projects WHERE id=?", (project,))
+            db.execute("DELETE FROM sessions WHERE created<=? AND NOT EXISTS (SELECT 1 FROM projects WHERE projects.owner=sessions.owner)", (self.clock() - self.config.retention_seconds,))
             return expired
