@@ -2,6 +2,7 @@
 !Dockerfile
 !requirements.txt
 !LICENSE
+!MUSIC_LICENSE
 !scripts/
 scripts/**
 !scripts/release_check.py
