@@ -2,7 +2,7 @@
 
 This service accepts browser uploads into one private data directory. SQLite owns project access, upload offsets, immutable edits and render jobs. The browser keeps only the current project ID and render request keys. It must reselect original files after a reload to resume an incomplete upload.
 
-The first service slice supports local use. Public deployment, account recovery, invite admission, external AI scoring and payments are not implemented. The editor offers three original CC0-1.0 instrumentals and an off option. Music choice belongs to the immutable revision; the worker resolves the selected catalog ID to a server-owned track.
+The service defaults to local use. An explicitly configured restricted public trial has access-code admission; public deployment, account recovery, external AI scoring and payments remain pending. The editor offers three original CC0-1.0 instrumentals and an off option. Music choice belongs to the immutable revision; the worker resolves the selected catalog ID to a server-owned track.
 
 ## Start and stop
 
@@ -20,15 +20,20 @@ Open `http://127.0.0.1:8770`. SIGTERM and Ctrl-C stop the web server, cancel act
 | `MOMENT_FFMPEG` | `ffmpeg` | Operator-provided executable |
 | `MOMENT_ORIGIN` | `http://127.0.0.1:8770` | Exact accepted Host and Origin |
 | `MOMENT_HOST` | `127.0.0.1` | Listen address |
-| `MOMENT_PORT` | `8770` | Must match the origin port |
+| `MOMENT_PORT` | `8770` | Local origin port, or the public proxy's backend port |
 | `MOMENT_RETENTION_DAYS` | `7` | Expiry from project creation, with no extension |
 | `MOMENT_CONTAINER_LOCAL` | unset | `1` permits an internal `0.0.0.0` bind with a loopback HTTP origin |
+| `MOMENT_PUBLIC_TRIAL` | unset | `1` enables restricted HTTPS trial configuration |
+| `MOMENT_ACCESS_CODE` | unset | New randomly generated admission secret, 32–256 ASCII characters |
+| `MOMENT_TRUSTED_PROXY` | unset | Single canonical IP of the immediate public proxy |
 
-Nonloopback origins fail at startup. The container exception does not add public authentication. Its operator must publish the container port only on host loopback. `MOMENT_ACCESS_CODE` is reserved and does not enable public mode.
+Nonloopback origins fail unless public trial mode, a canonical HTTPS domain, an admission secret and a single trusted proxy are configured together. An access code alone does not enable public mode. The local container exception does not add public authentication and cannot be combined with public trial mode. Publish the local container port only on host loopback. See [public proxy and retention operations](operations.md) before configuring a public host.
 
 ## Sessions and boundaries
 
 `GET /api/session` creates a random 256-bit owner secret in an HttpOnly, SameSite=Strict cookie. SQLite stores only its SHA-256 hash. The response supplies a session-bound CSRF nonce, owned projects and limits. An existing valid cookie restores its owner after restart. Cookies are persistent for one year; projects retain their own shorter expiry.
+
+In public trial mode, `GET /` first displays the admission page. `POST /api/admission` requires the exact Origin, at most 1 KiB of JSON and the access code. Only success can create an owner. The Secure cookie is independent for every browser, even when they use the same admission code. Safe invitation navigation to `/` can show the public admission page; private routes and writes retain strict Fetch Metadata checks. Limits and backoff apply before owner creation.
 
 Every API request except session bootstrap needs the owner cookie. Every write needs the exact configured `Origin` and `X-CSRF-Token`. Every request needs the exact configured `Host`; an explicit foreign Origin or cross-site Fetch Metadata value is rejected. There is no CORS support or capability in a URL. Private responses use `Cache-Control: no-store, private`. `/healthz` returns only `{"status":"ok"}` and still checks Host.
 
@@ -36,7 +41,7 @@ Names are display data. The server creates random project, asset and job IDs and
 
 ## Routes
 
-JSON write bodies are limited to 64 KiB when Content-Length is present. Waitress and Flask both cap every request at 8 MiB. Binary chunks use `application/octet-stream`. All errors return an `error` message, except an early request-size rejection from Waitress and an empty 416 range response.
+JSON write bodies are limited to 64 KiB when Content-Length is present. Flask caps requests at 8 MiB. Waitress uses an exclusive ceiling one byte above that value, accepting an exact 8 MiB body while refusing larger bodies. Binary chunks use `application/octet-stream` with a known `Content-Length`. HTTP `Transfer-Encoding: chunked` is outside the upload contract; the browser sends bounded application chunks with known lengths. All errors return an `error` message, except an early request-size rejection from Waitress and an empty 416 range response. The browser maps non-JSON upstream errors to a safe message and retains their HTTP status.
 
 | Method | Path | Body or result |
 | --- | --- | --- |
