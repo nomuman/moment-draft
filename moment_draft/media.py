@@ -44,8 +44,8 @@ def probe(path, source_id, name):
         return asdict(Source(source_id, name, path.stat().st_size, codec.width, codec.height, "image" if image else "video", duration_frames, any(s.type == "audio" for s in container.streams)))
 
 
-def inspect(path, source_id, name, timeout):
-    result = subprocess.run([sys.executable, "-m", "moment_draft.media", "probe", str(path), source_id, name], capture_output=True, timeout=timeout, check=True)
+def inspect(path, source_id, name, timeout, lease_fd):
+    result = subprocess.run([sys.executable, "-m", "moment_draft.media", "probe", str(path), source_id, name], capture_output=True, timeout=timeout, check=True, pass_fds=(lease_fd,))
     return json.loads(result.stdout)
 
 
@@ -67,17 +67,25 @@ def verify_output(path, expected_frames, active=lambda: True):
             raise ValueError("書き出しの音声長が一致しません。")
 
 
-def supervised(args):
-    process = subprocess.Popen(args, stdin=subprocess.DEVNULL)
+def supervised(args, inherited_fds):
+    stopping = False
+
+    def stop(signum, frame):
+        nonlocal stopping
+        stopping = True
+
+    signal.signal(signal.SIGTERM, stop)
+    process = subprocess.Popen(args, stdin=subprocess.DEVNULL, pass_fds=inherited_fds)
     try:
         while process.poll() is None:
             readable, _, _ = select.select([sys.stdin.buffer], [], [], .2)
-            if readable and not os.read(sys.stdin.fileno(), 1):
+            if stopping or readable and not os.read(sys.stdin.fileno(), 1):
                 process.terminate()
                 try:
                     process.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     process.kill()
+                    process.wait()
                 return 1
         return process.returncode
     finally:
@@ -86,34 +94,49 @@ def supervised(args):
         process.wait()
 
 
-def run_native(args, work, active, deadline, progress=None):
+def run_native(args, work, active, deadline, progress=None, lease_fd=None):
     spec = work / "command.json"
     spec.write_text(json.dumps(args))
-    with (work / "native.log").open("ab") as log:
-        process = subprocess.Popen([sys.executable, "-m", "moment_draft.media", "supervise", str(spec)], stdin=subprocess.PIPE, stdout=log, stderr=log, start_new_session=True)
-        try:
-            while process.poll() is None:
-                if not active():
-                    raise Cancelled()
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("書き出しが時間上限を超えました。")
-                if progress:
-                    progress()
-                time.sleep(.15)
-            if process.returncode:
-                raise ValueError("映像の処理に失敗しました。")
-        finally:
-            if process.poll() is None:
+    lifetime_read, lifetime_write = os.pipe()
+    inherited = (lifetime_write,) if lease_fd is None else (lifetime_write, lease_fd)
+    try:
+        with (work / "native.log").open("ab") as log:
+            process = subprocess.Popen([sys.executable, "-m", "moment_draft.media", "supervise", str(spec),
+                                        *(str(fd) for fd in inherited)], stdin=subprocess.PIPE,
+                                       stdout=log, stderr=log, start_new_session=True, pass_fds=inherited)
+    except BaseException:
+        os.close(lifetime_read)
+        raise
+    finally:
+        os.close(lifetime_write)
+    try:
+        while not select.select([lifetime_read], [], [], .15)[0]:
+            if not active():
+                raise Cancelled()
+            if time.monotonic() >= deadline:
+                raise TimeoutError("書き出しが時間上限を超えました。")
+            if progress:
+                progress()
+    finally:
+        process.stdin.close()
+        if not select.select([lifetime_read], [], [], 0)[0]:
+            try:
                 os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            if not select.select([lifetime_read], [], [], 4)[0]:
                 try:
-                    process.wait(timeout=3)
-                except subprocess.TimeoutExpired:
                     os.killpg(process.pid, signal.SIGKILL)
-                    process.wait()
-            process.stdin.close()
+                except ProcessLookupError:
+                    pass
+                select.select([lifetime_read], [], [])
+        process.wait()
+        os.close(lifetime_read)
+    if process.returncode:
+        raise ValueError("映像の処理に失敗しました。")
 
 
-def render(snapshot, paths, work, ffmpeg, active, progress, timeout, music_path=None):
+def render(snapshot, paths, work, ffmpeg, active, progress, timeout, music_path=None, lease_fd=None):
     plan = from_dict(snapshot["plan"])
     sources = {asset["id"]: Source(**json.loads(asset["metadata"])) for asset in snapshot["assets"]}
     work.mkdir(parents=True, exist_ok=True)
@@ -123,7 +146,7 @@ def render(snapshot, paths, work, ffmpeg, active, progress, timeout, music_path=
     for asset, source in sources.items():
         if source.kind == "image":
             scaled[asset] = work / (asset + ".png")
-            run_native(base + ["-protocol_whitelist", "file,pipe", "-i", str(paths[asset]), "-vf", "scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1", "-frames:v", "1", "-threads", "2", str(scaled[asset])], work, active, deadline)
+            run_native(base + ["-protocol_whitelist", "file,pipe", "-i", str(paths[asset]), "-vf", "scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1", "-frames:v", "1", "-threads", "2", str(scaled[asset])], work, active, deadline, lease_fd=lease_fd)
     args, filters, inputs = list(base), [], []
     input_index = 0
     for scene in (s for s in plan.scenes if s.included):
@@ -161,7 +184,7 @@ def render(snapshot, paths, work, ffmpeg, active, progress, timeout, music_path=
             if values and values[-1].isdigit():
                 progress(int(values[-1]) / 1_000_000 / (plan.frame_count / FPS) * .94)
 
-    run_native(args, work, active, deadline, update)
+    run_native(args, work, active, deadline, update, lease_fd=lease_fd)
     verify_output(target, plan.frame_count, active)
     return target
 
@@ -170,4 +193,4 @@ if __name__ == "__main__":
     if sys.argv[1] == "probe":
         print(json.dumps(probe(Path(sys.argv[2]), sys.argv[3], sys.argv[4])))
     elif sys.argv[1] == "supervise":
-        raise SystemExit(supervised(json.loads(Path(sys.argv[2]).read_text())))
+        raise SystemExit(supervised(json.loads(Path(sys.argv[2]).read_text()), tuple(map(int, sys.argv[3:]))))

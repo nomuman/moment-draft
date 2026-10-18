@@ -12,7 +12,7 @@ Use Python 3.11, install `requirements.txt`, and provide a native FFmpeg executa
 MOMENT_FFMPEG=/absolute/path/to/ffmpeg python -m moment_draft
 ```
 
-Open `http://127.0.0.1:8770`. SIGTERM and Ctrl-C stop the web server, cancel active native work, join the worker and release the data-directory lock. A second service or cleanup process cannot open the same volume while the service runs.
+Open `http://127.0.0.1:8770`. SIGTERM and Ctrl-C stop the web server, cancel active native work, join the worker and release the data-directory lock. A second service or cleanup process cannot open the same volume while the service or any of its native children still holds the volume lease. After a crash, startup refuses the volume until those children exit.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -46,6 +46,7 @@ JSON write bodies are limited to 64 KiB when Content-Length is present. Waitress
 | GET | `/api/projects/<p>` | Assets, current plan/music, jobs and current artifact URL |
 | POST | `/api/projects/<p>/assets` | `{name,size}` reserves an asset and capacity |
 | GET | `/api/projects/<p>/assets/<a>` | State, offset and ordered chunk receipts |
+| DELETE | `/api/projects/<p>/assets/<a>` | Removes a receiving/failed asset and releases its reserved capacity |
 | PUT | `/api/projects/<p>/assets/<a>/chunks` | Binary data; `Upload-Offset` and optional `X-Chunk-SHA256` headers |
 | POST | `/api/projects/<p>/assets/<a>/finish` | `{}` verifies the complete local file |
 | GET, HEAD | `/api/projects/<p>/assets/<a>/source` | Verified owned original with Range support |
@@ -54,7 +55,7 @@ JSON write bodies are limited to 64 KiB when Content-Length is present. Waitress
 | POST | `/api/projects/<p>/jobs` | `{revision,request_key}` queues a render, returns 202 |
 | GET | `/api/projects/<p>/jobs/<j>` | Job state, attempt, progress, safe error |
 | POST | `/api/projects/<p>/jobs/<j>/cancel` | `{}` cancels queued work or requests running cancellation |
-| POST | `/api/projects/<p>/jobs/<j>/retry` | `{}` explicitly retries failed/cancelled work |
+| POST | `/api/projects/<p>/jobs/<j>/retry` | `{}` explicitly retries failed/cancelled work at the current revision |
 | GET, HEAD | `/api/projects/<p>/jobs/<j>/artifact` | Current successful MP4 with Range support |
 | GET | `/api/music` | `{tracks:[]}` in the initial slice |
 
@@ -66,11 +67,11 @@ Edit changes use `kind` and `scene_id`. `include` and `exclude` toggle adoption.
 
 Assets move through `receiving`, `verifying`, `ready` or `failed`. Registration reserves declared bytes transactionally. A chunk can append only at the confirmed offset. The service computes SHA-256, writes and fsyncs bytes, then commits the offset and immutable receipt. Replaying a matching receipt returns the current offset. Changed bytes at a received offset return 409. Restart truncates any bytes beyond the confirmed offset. A process interrupted during verification returns the asset to `receiving`, allowing an idempotent finish retry.
 
-The browser hashes each acknowledged chunk of a reselected original before appending. It never loads an entire multi-gigabyte original into one ArrayBuffer. Uploads use at most 8 MiB per request. A lost chunk acknowledgement can be resolved by GETting the asset and comparing its receipt. An incomplete finish returns 409. Invalid media leaves a per-file failure while other ready assets remain usable.
+The browser hashes each acknowledged chunk of a reselected original before appending. It never loads an entire multi-gigabyte original into one ArrayBuffer. Uploads use at most 8 MiB per request. A lost chunk acknowledgement can be resolved by GETting the asset and comparing its receipt. An incomplete finish returns 409. Invalid media leaves a per-file failure while other ready assets remain usable. The owner can discard a receiving or failed asset with DELETE, including an abandoned upload, then register a replacement. The route requires CSRF and returns `{discarded:true}` for a completed or repeated removal. Verifying and ready assets return 409. It unlinks only the service-owned copy before releasing its database reservation and chunk receipts; an interrupted deletion can be repeated after restart. Browser originals are untouched. The asset card offers this action while no upload is active.
 
 The native probe checks file signatures, decodes a frame, and checks dimensions, duration and HDR transfer metadata. It runs in a subprocess with a deadline. Accepted formats in this slice are JPEG, PNG, WebP and SDR ISO-BMFF videos such as MP4/MOV. HDR is refused; a 10-bit format alone is not treated as HDR. HEIC support is not claimed.
 
-Jobs move through `queued`, `running`, `succeeded`, `failed` or `cancelled`. A repeated project/request-key pair returns the same job; the same key with a different revision returns 409. Retries preserve the input snapshot and increment the attempt count. A random token fences each attempt. Native work runs outside SQLite transactions, uses local-file protocols, and has a deadline. A supervisor terminates FFmpeg when its parent pipe closes, including abrupt service death. Cancellation terminates the native process group. Restart marks interrupted running jobs as failed and removes abandoned service-owned attempt directories.
+Jobs move through `queued`, `running`, `succeeded`, `failed` or `cancelled`. A repeated project/request-key pair returns the same job; the same key with a different revision returns 409. Retries preserve the input snapshot and increment the attempt count. Retrying a job from an older revision returns 409 without queueing it; enqueue the current revision instead. A random token fences each attempt. Native work runs outside SQLite transactions, uses local-file protocols, and has a deadline. A supervisor terminates FFmpeg when its parent pipe closes, including abrupt service death. Supervisor and native processes inherit the volume lease. Cancellation terminates their process group, escalates to SIGKILL if necessary, and waits until their inherited lifetime pipe closes before releasing the attempt. The supervisor remains unreaped until this proof of native exit, preventing PID reuse during escalation. Restart marks interrupted running jobs as failed and removes abandoned service-owned attempt directories only after it acquires the lease.
 
 Each attempt uses its own temporary directory. Photos are scaled once before looping. The renderer produces 1280×720, 30 fps H.264/AAC with contain padding, automatic orientation, original video sound and silence for stills/silent videos. It decodes output frames and checks frame count and audio duration before publishing. Source identity, attempt token, cancellation and expiry are checked again before atomic rename and successful status. Rename followed by an interrupted database commit cannot expose an uncommitted output. Its job remains failed after restart and requires explicit retry.
 
@@ -93,6 +94,6 @@ The first command lists expired project IDs without deleting them. `--apply` can
 MOMENT_FFMPEG=/absolute/path/to/ffmpeg EDITOR_FFMPEG=/absolute/path/to/ffmpeg python -m unittest discover -s tests -v
 ```
 
-Service tests upload generated small media, replay chunks, recover an uncommitted tail, edit, render and decode output. They check portrait padding, original sound, preview/download identity, private Range access, CAS, expiry, quotas, cancellation and attempt fencing. Process tests start actual Waitress processes, kill and restart them, retain the same owner cookie, resume an upload and retrieve the same completed output after another restart. A separate native test kills a parent process and verifies its FFmpeg child exits. The original eight experiment tests remain unchanged.
+Service tests upload generated small media, replay chunks, recover an uncommitted tail, edit, render and decode output. They check portrait padding, original sound, preview/download identity, private Range access, CAS, expiry, quotas, cancellation and attempt fencing. Process tests start actual Waitress processes, kill and restart them, retain the same owner cookie, resume an upload and retrieve the same completed output after another restart. Process regressions pause a supervisor during parent death and verify that restart cannot delete its live attempt, and cancel a native child that ignores SIGTERM. Asset recovery checks cover ownership, CSRF, state restrictions, released reservations, interrupted deletion and symlink containment. The original eight experiment tests remain unchanged.
 
 Browser usability, event selection quality, private real-media performance, public deployment security, codec breadth and container operation require separate evidence. API and native tests do not prove those gates.

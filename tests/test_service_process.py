@@ -3,6 +3,8 @@ import http.cookiejar
 import io
 import json
 import os
+import signal
+import threading
 import socket
 import subprocess
 import sys
@@ -14,6 +16,10 @@ from urllib.error import URLError
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 from PIL import Image
+
+from moment_draft.config import Config
+from moment_draft.media import Cancelled, run_native
+from moment_draft.projects import Projects
 
 
 class ProcessTests(unittest.TestCase):
@@ -103,6 +109,158 @@ class ProcessTests(unittest.TestCase):
                     process.terminate()
                     process.wait(timeout=10)
                 log.close()
+
+    def test_cancellation_reaps_native_that_ignores_sigterm(self):
+        self.cancel_native()
+
+    def test_cancellation_escalates_after_supervisor_death(self):
+        self.cancel_native(signal.SIGKILL)
+
+    def test_cancellation_escalates_while_supervisor_is_stopped(self):
+        self.cancel_native(signal.SIGSTOP)
+
+    def cancel_native(self, supervisor_signal=None):
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            marker = work / "native.json"
+            code = "import json,os,signal,sys,time; from pathlib import Path; signal.signal(signal.SIGTERM, signal.SIG_IGN); Path(sys.argv[1]).write_text(json.dumps([os.getpid(),os.getppid()])); time.sleep(60)"
+            cancel = threading.Event()
+            outcomes = []
+
+            def run():
+                try:
+                    run_native([sys.executable, "-c", code, str(marker)], work,
+                               lambda: not cancel.is_set(), time.monotonic() + 20)
+                except Cancelled:
+                    outcomes.append("cancelled")
+
+            thread = threading.Thread(target=run)
+            thread.start()
+            try:
+                deadline = time.monotonic() + 10
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertTrue(marker.exists())
+                pid, supervisor = json.loads(marker.read_text())
+                if supervisor_signal:
+                    os.kill(supervisor, supervisor_signal)
+                cancel.set()
+                thread.join(timeout=6)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(outcomes, ["cancelled"])
+                state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+                self.assertTrue(not state or state.startswith("Z"), state)
+            finally:
+                cancel.set()
+                thread.join(timeout=6)
+                if marker.exists():
+                    try:
+                        os.kill(json.loads(marker.read_text())[0], signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+    def test_restart_waits_for_paused_supervisor_and_native_exit(self):
+        self.restart_native()
+
+    def test_restart_remains_blocked_after_supervisor_death(self):
+        self.restart_native(kill_supervisor=True)
+
+    def restart_native(self, kill_supervisor=False):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            marker = root / "native.json"
+            ffmpeg = root / "native"
+            ffmpeg.write_text(f"#!{sys.executable}\nimport json,os,signal,time\nfrom pathlib import Path\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\nPath({str(marker)!r}).write_text(json.dumps([os.getpid(),os.getppid()]))\ntime.sleep(60)\n")
+            ffmpeg.chmod(0o700)
+            script = """
+import io,sys
+from pathlib import Path
+from PIL import Image
+from moment_draft.config import Config
+from moment_draft.projects import Projects
+from moment_draft.worker import Worker
+root = Path(sys.argv[1])
+store = Projects(Config(root / 'data', ffmpeg=str(root / 'native'), free_floor=0))
+_, session = store.new_session()
+owner = session['owner']
+project = store.create(owner)['id']
+image = io.BytesIO()
+Image.new('RGB', (16, 16), 'red').save(image, format='PNG')
+data = image.getvalue()
+asset = store.register(owner, project, 'image.png', len(data))['id']
+store.append(owner, project, asset, 0, data)
+store.finish(owner, project, asset)
+store.revise(owner, project, 0)
+store.enqueue(owner, project, 1, 'restart-test')
+Worker(store).run_once()
+"""
+            parent = subprocess.Popen([sys.executable, "-c", script, str(root)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            native = supervisor = None
+            try:
+                deadline = time.monotonic() + 10
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertTrue(marker.exists())
+                native, supervisor = json.loads(marker.read_text())
+                attempts = list((root / "data" / "projects").glob("*/attempts/*"))
+                self.assertEqual(len(attempts), 1)
+                os.kill(supervisor, signal.SIGSTOP)
+                parent.kill()
+                parent.wait(timeout=5)
+                config = Config(root / "data", free_floor=0)
+                try:
+                    restarted = Projects(config)
+                except RuntimeError:
+                    pass
+                else:
+                    restarted.close()
+                    self.fail("restart acquired the volume while its prior native process was alive")
+                self.assertTrue(attempts[0].is_dir())
+                os.kill(native, 0)
+                if kill_supervisor:
+                    os.kill(supervisor, signal.SIGKILL)
+                    time.sleep(.1)
+                    try:
+                        restarted = Projects(config)
+                    except RuntimeError:
+                        pass
+                    else:
+                        restarted.close()
+                        self.fail("restart acquired the volume while its orphan native process was alive")
+                    self.assertTrue(attempts[0].is_dir())
+                    os.kill(native, signal.SIGKILL)
+                else:
+                    os.kill(supervisor, signal.SIGCONT)
+                deadline = time.monotonic() + 6
+                while time.monotonic() < deadline:
+                    try:
+                        restarted = Projects(config)
+                    except RuntimeError:
+                        time.sleep(.05)
+                    else:
+                        break
+                else:
+                    self.fail("volume lease was not released after native shutdown")
+                try:
+                    self.assertFalse(attempts[0].exists())
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(native, 0)
+                finally:
+                    restarted.close()
+            finally:
+                if supervisor:
+                    try:
+                        os.kill(supervisor, signal.SIGCONT)
+                    except ProcessLookupError:
+                        pass
+                if parent.poll() is None:
+                    parent.kill()
+                    parent.wait(timeout=5)
+                if native:
+                    try:
+                        os.kill(native, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
 
     def test_parent_crash_closes_native_supervisor(self):
         with tempfile.TemporaryDirectory() as temporary:

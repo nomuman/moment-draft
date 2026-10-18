@@ -7,7 +7,7 @@ import shutil
 import sqlite3
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict
 
 from . import timeline
@@ -70,7 +70,6 @@ class Projects:
 
     def close(self):
         self.db.close()
-        fcntl.flock(self.volume_lock, fcntl.LOCK_UN)
         self.volume_lock.close()
 
     @contextmanager
@@ -184,6 +183,28 @@ class Projects:
             db.execute("INSERT INTO assets(id,project,name,size,state) VALUES(?,?,?,?,'receiving')", (asset, project, name, size))
         return self.asset_status(owner, project, asset)
 
+    def discard_asset(self, owner, project, asset):
+        with self.transaction() as db:
+            self.owned(db, owner, project)
+            row = db.execute("SELECT * FROM assets WHERE id=? AND project=?", (asset, project)).fetchone()
+            if row is None:
+                return {"discarded": True}
+            if row["state"] not in {"receiving", "failed"}:
+                raise Problem("確認中または確認済みの素材は取り除けません。", 409)
+            with ExitStack() as stack:
+                descriptor = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                stack.callback(os.close, descriptor)
+                for directory in ("projects", row["project"], "assets"):
+                    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+                    stack.callback(os.close, descriptor)
+                try:
+                    os.unlink(row["id"], dir_fd=descriptor)
+                except FileNotFoundError:
+                    pass
+                os.fsync(descriptor)
+            db.execute("DELETE FROM assets WHERE id=?", (row["id"],))
+        return {"discarded": True}
+
     def asset_status(self, owner, project, asset):
         with self.lock:
             row = self.asset(self.db, owner, project, asset)
@@ -243,7 +264,7 @@ class Projects:
             path = self.asset_path(project, asset)
         try:
             original = identity(path)
-            source = inspect(path, asset, row["name"], self.config.probe_seconds)
+            source = inspect(path, asset, row["name"], self.config.probe_seconds, self.volume_lock.fileno())
             with path.open("rb") as handle:
                 digest = hashlib.file_digest(handle, "sha256").hexdigest()
             if identity(path) != original:
@@ -369,6 +390,9 @@ class Projects:
                 elif row["state"] == "running":
                     db.execute("UPDATE jobs SET cancel=1 WHERE id=?", (job,))
             elif action == "retry":
+                current = self.owned(db, owner, project)
+                if row["revision"] != current["revision"]:
+                    raise Problem("最新の編集内容から書き出してください。", 409)
                 if row["state"] not in {"failed", "cancelled"} or row["attempt"] >= self.config.max_attempts:
                     raise Problem("この書き出しは再試行できません。", 409)
                 self.queue_space(db)

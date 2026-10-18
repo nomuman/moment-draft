@@ -35,7 +35,8 @@ class Worker:
             snapshot = json.loads(job["snapshot"])
             paths = {asset["id"]: self.projects.checked_source(job["project"], asset) for asset in snapshot["assets"]}
             target = render(snapshot, paths, work, self.projects.config.ffmpeg, active,
-                            lambda progress: self.projects.active(job, progress), self.projects.config.render_seconds)
+                            lambda progress: self.projects.active(job, progress), self.projects.config.render_seconds,
+                            lease_fd=self.projects.volume_lock.fileno())
             if not self.projects.complete(job, target):
                 raise Cancelled()
         except Cancelled:

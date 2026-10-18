@@ -82,6 +82,14 @@ function drawAssets() {
       progress.setAttribute("aria-label", `${asset.name} の送信`);
       detail.append(progress);
     }
+    if (!uploading && ["receiving", "failed"].includes(asset.state)) {
+      detail.append(button("取り除く", async () => {
+        await api(path(`/assets/${asset.id}`), {}, "DELETE");
+        if (previews.has(asset.id)) URL.revokeObjectURL(previews.get(asset.id).url);
+        previews.delete(asset.id); statuses.delete(asset.id);
+        await refresh();
+      }, true));
+    }
     row.append(detail);
     return row;
   });
@@ -146,7 +154,7 @@ function drawJobs() {
     const labels = { queued: "順番を待っています", running: `動画を作成中 ${Math.floor(job.progress * 100)}%`, succeeded: "完成しました", failed: job.error, cancelled: "中止しました" };
     row.append(node("span", `第${job.revision}版 · ${labels[job.state]}`));
     if (["queued", "running"].includes(job.state)) row.append(button("中止", async () => { await api(path(`/jobs/${job.id}/cancel`), {}); await refresh(); }, true));
-    if (["failed", "cancelled"].includes(job.state) && job.attempt < 3) row.append(button("再試行", async () => { await api(path(`/jobs/${job.id}/retry`), {}); await refresh(); }, true));
+    if (["failed", "cancelled"].includes(job.state) && job.attempt < 3 && job.revision === project.revision) row.append(button("再試行", async () => { await api(path(`/jobs/${job.id}/retry`), {}); await refresh(); }, true));
     return row;
   }));
   $("output").hidden = !project?.artifact;
@@ -224,8 +232,8 @@ $("files").addEventListener("change", async (event) => {
   if (!files.length) return;
   if (files.length > session.limits.max_assets) { notice("一度に選べる素材は100点までです。"); event.target.value = ""; return; }
   for (const file of files) waiting.set(file, URL.createObjectURL(file));
-  drawAssets();
   uploading = true;
+  drawAssets();
   $("files").disabled = true; $("new-project").disabled = true;
   notice();
   const errors = [];

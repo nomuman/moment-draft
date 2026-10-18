@@ -113,6 +113,10 @@ def create_app(projects):
     def asset_status(project, asset):
         return jsonify(projects.asset_status(owner(), project, asset))
 
+    @app.delete("/api/projects/<project>/assets/<asset>")
+    def discard_asset(project, asset):
+        return jsonify(projects.discard_asset(owner(), project, asset))
+
     @app.put("/api/projects/<project>/assets/<asset>/chunks")
     def append(project, asset):
         try:

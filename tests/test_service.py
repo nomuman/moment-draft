@@ -7,6 +7,7 @@ import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 import av
 import numpy as np
@@ -185,6 +186,97 @@ class ServiceTests(unittest.TestCase):
         source = self.store.asset_path(self.project, asset)
         source.write_bytes(b"changed")
         self.assertEqual(self.call(self.base + "/jobs", {"revision": 1, "request_key": "changed-source"}).status_code, 409)
+
+    def test_retry_rejects_old_revision_without_queueing(self):
+        self.upload(self.photo())
+        self.call(self.base + "/draft", {"revision": 0})
+        job = self.call(self.base + "/jobs", {"revision": 1, "request_key": "old-revision"}).json
+        endpoint = self.base + f"/jobs/{job['id']}"
+        self.call(endpoint + "/cancel", {})
+        self.call(self.base + "/draft", {"revision": 1})
+        response = self.call(endpoint + "/retry", {})
+        self.assertEqual(response.status_code, 409, response.json)
+        self.assertEqual(self.call(endpoint).json["state"], "cancelled")
+
+    def test_discard_incomplete_and_failed_assets_releases_reservations(self):
+        self.store.config = replace(self.config, max_assets=1, project_bytes=3, host_bytes=3)
+        for failed in (False, True):
+            asset = self.call(self.base + "/assets", {"name": "bad.mp4", "size": 3}).json["id"]
+            endpoint = self.base + f"/assets/{asset}"
+            self.call(endpoint + "/chunks", b"bad" if failed else b"b", "PUT", {"Upload-Offset": "0"})
+            if failed:
+                self.assertEqual(self.call(endpoint + "/finish", {}).json["state"], "failed")
+            self.assertEqual(self.call(self.base + "/assets", {"name": "new.mp4", "size": 3}).status_code, 413)
+            path = self.store.asset_path(self.project, asset)
+            response = self.call(endpoint, {}, "DELETE")
+            self.assertEqual(response.status_code, 200, response.json)
+            self.assertFalse(path.exists())
+            self.assertEqual(self.call(endpoint, {}, "DELETE").status_code, 200)
+            self.assertEqual(self.call(endpoint).status_code, 404)
+            self.assertEqual(self.call(self.base).json["assets"], [])
+
+    def test_discard_checks_owner_csrf_and_asset_state(self):
+        asset = self.call(self.base + "/assets", {"name": "partial.mp4", "size": 3}).json["id"]
+        endpoint = self.base + f"/assets/{asset}"
+        self.assertEqual(self.call(endpoint, {}, "DELETE", csrf=False).status_code, 403)
+        stranger = self.app.test_client()
+        token = self.call("/api/session", client=stranger).json["csrf"]
+        response = self.call(endpoint, {}, "DELETE", headers={"X-CSRF-Token": token}, client=stranger, csrf=False)
+        self.assertEqual(response.status_code, 404)
+        with self.store.transaction() as db:
+            db.execute("UPDATE assets SET state='verifying' WHERE id=?", (asset,))
+        self.assertEqual(self.call(endpoint, {}, "DELETE").status_code, 409)
+        ready = self.upload(self.photo())
+        self.assertEqual(self.call(self.base + f"/assets/{ready}", {}, "DELETE").status_code, 409)
+        self.assertEqual(self.call(self.base + f"/assets/{ready}/source").status_code, 200)
+        self.now += self.config.retention_seconds
+        self.assertEqual(self.call(endpoint, {}, "DELETE").status_code, 404)
+
+    def test_discard_retries_after_unlink_failure_and_interrupted_commit(self):
+        self.config = replace(self.config, max_assets=1)
+        self.store.config = self.config
+        asset = self.call(self.base + "/assets", {"name": "partial.mp4", "size": 3}).json["id"]
+        endpoint = self.base + f"/assets/{asset}"
+        self.call(endpoint + "/chunks", b"b", "PUT", {"Upload-Offset": "0"})
+        path = self.store.asset_path(self.project, asset)
+        with patch("moment_draft.projects.os.unlink", side_effect=PermissionError):
+            self.assertEqual(self.call(endpoint, {}, "DELETE").status_code, 500)
+        self.assertTrue(path.exists())
+        self.assertEqual(self.call(self.base + "/assets", {"name": "new.mp4", "size": 3}).status_code, 413)
+        with patch("moment_draft.projects.os.fsync", side_effect=OSError):
+            self.assertEqual(self.call(endpoint, {}, "DELETE").status_code, 500)
+        self.assertFalse(path.exists())
+        self.assertEqual(self.call(endpoint).json["offset"], 1)
+        self.store.close()
+        self.store = Projects(self.config, clock=lambda: self.now)
+        self.app = create_app(self.store)
+        token = self.client.get_cookie("moment_owner", domain="127.0.0.1").value
+        self.client = self.app.test_client()
+        self.client.set_cookie("moment_owner", token, domain="127.0.0.1")
+        self.assertEqual(self.call(endpoint).json["state"], "failed")
+        self.assertEqual(self.call(endpoint, {}, "DELETE").status_code, 200)
+        self.assertEqual(self.call(endpoint, {}, "DELETE").status_code, 200)
+        self.assertEqual(self.call(self.base + "/assets", {"name": "new.mp4", "size": 3}).status_code, 201)
+
+    def test_discard_never_follows_asset_directory_symlink(self):
+        asset = self.call(self.base + "/assets", {"name": "partial.mp4", "size": 3}).json["id"]
+        endpoint = self.base + f"/assets/{asset}"
+        outside = self.root / "originals"
+        outside.mkdir()
+        original = outside / asset
+        original.write_bytes(b"original")
+        directory = self.store.asset_path(self.project, asset).parent
+        saved = directory.with_name("saved-assets")
+        directory.rename(saved)
+        directory.symlink_to(outside, target_is_directory=True)
+        self.assertEqual(self.call(endpoint, {}, "DELETE").status_code, 500)
+        self.assertEqual(original.read_bytes(), b"original")
+        self.assertEqual(self.call(endpoint).status_code, 200)
+        directory.unlink()
+        saved.rename(directory)
+        self.store.asset_path(self.project, asset).symlink_to(original)
+        self.assertEqual(self.call(endpoint, {}, "DELETE").status_code, 200)
+        self.assertEqual(original.read_bytes(), b"original")
 
     def test_volume_lock_and_public_origin_refusal(self):
         with self.assertRaises(RuntimeError):
