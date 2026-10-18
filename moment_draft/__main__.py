@@ -4,6 +4,8 @@ import os
 import signal
 
 from waitress import create_server
+from waitress.channel import HTTPChannel
+from waitress.server import MultiSocketServer
 from waitress.wasyncore import ExitNow
 
 from .config import Config
@@ -14,9 +16,11 @@ from .worker import Worker
 
 
 def stop_service(server, retention, worker, projects, timeout):
+    channels = server.map if isinstance(server, MultiSocketServer) else server.active_channels
+    for channel in list(channels.values()):
+        if isinstance(channel, HTTPChannel):
+            channel.handle_close()
     server.close()
-    for channel in list(server.active_channels.values()):
-        channel.handle_close()
     retention.stop()
     worker.stop()
     server.task_dispatcher.shutdown(timeout=timeout)
@@ -52,7 +56,13 @@ def main():
                  "trusted_proxy_headers": {"x-forwarded-proto", "x-forwarded-for"}}
     server = create_server(app, host=host, port=port, threads=6, max_request_body_size=config.chunk_bytes + 1, max_request_header_size=16384, connection_limit=32, channel_timeout=60, clear_untrusted_proxy_headers=True, **proxy)
 
+    stopping = False
+
     def stop(signum, frame):
+        nonlocal stopping
+        if stopping:
+            return
+        stopping = True
         raise ExitNow()
 
     signal.signal(signal.SIGTERM, stop)
@@ -66,6 +76,7 @@ def main():
     except (ExitNow, KeyboardInterrupt):
         pass
     finally:
+        stopping = True
         stop_service(server, retention, worker, projects, config.probe_seconds + 60)
 
 

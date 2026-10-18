@@ -1,6 +1,7 @@
 import http.client
 import http.cookiejar
 import io
+import itertools
 import json
 import os
 import signal
@@ -24,13 +25,13 @@ from moment_draft.projects import Projects
 
 class ProcessTests(unittest.TestCase):
     def test_shutdown_releases_stalled_playback_and_download_before_restart(self):
-        for shutdown_signal in (signal.SIGINT, signal.SIGTERM):
-            with self.subTest(signal=shutdown_signal), tempfile.TemporaryDirectory() as temporary:
+        for host, shutdown_signal in itertools.product(("localhost", "127.0.0.1"), (signal.SIGINT, signal.SIGTERM)):
+            with self.subTest(host=host, signal=shutdown_signal), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 with socket.socket() as listener:
                     listener.bind(("127.0.0.1", 0))
                     port = listener.getsockname()[1]
-                origin = f"http://127.0.0.1:{port}"
+                origin = f"http://{host}:{port}"
                 config = Config(root / "data", origin=origin, free_floor=0)
                 projects = Projects(config)
                 token, session = projects.new_session()
@@ -43,7 +44,7 @@ class ProcessTests(unittest.TestCase):
                 with artifact.open("wb") as output:
                     output.truncate(32 * 1024**2)
                 projects.close()
-                env = {**os.environ, "MOMENT_DATA_DIR": str(config.data_dir), "MOMENT_HOST": "127.0.0.1",
+                env = {**os.environ, "MOMENT_DATA_DIR": str(config.data_dir), "MOMENT_HOST": host,
                        "MOMENT_PORT": str(port), "MOMENT_ORIGIN": origin}
                 processes, connections = [], []
                 log_path = root / "server.log"
@@ -66,7 +67,7 @@ class ProcessTests(unittest.TestCase):
                         process = start()
                         endpoint = f"/api/projects/{project}/jobs/{job}/artifact"
                         for suffix in ("", "?download=1"):
-                            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+                            connection = http.client.HTTPConnection(host, port, timeout=3)
                             connections.append(connection)
                             connection.connect()
                             connection.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
@@ -85,7 +86,7 @@ class ProcessTests(unittest.TestCase):
                         self.assertEqual(process.returncode, 0, log_path.read_text())
                         self.assertNotIn("thread(s) still running", log_path.read_text())
                         restarted = start()
-                        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+                        connection = http.client.HTTPConnection(host, port, timeout=3)
                         connections.append(connection)
                         connection.request("GET", endpoint, headers={"Cookie": f"moment_owner={token}", "Range": "bytes=0-15"})
                         response = connection.getresponse()
