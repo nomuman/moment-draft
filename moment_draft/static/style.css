@@ -1,0 +1,49 @@
+:root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Noto Sans JP", sans-serif; color: #26332e; background: #f5f4ee; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+header { display: flex; align-items: center; gap: 32px; padding: 24px 5vw; border-bottom: 1px solid #d8dbd0; }
+header span { font-size: 13px; color: #65736b; }
+.wordmark { text-decoration: none; color: inherit; font-family: Georgia, serif; font-size: 25px; letter-spacing: -.7px; }
+main { display: grid; grid-template-columns: 220px minmax(0, 880px); gap: 56px; max-width: 1280px; margin: 0 auto; padding: 48px 32px; }
+aside { border-right: 1px solid #d8dbd0; padding-right: 24px; }
+aside h2 { margin-top: 32px; font-size: 12px; color: #647167; }
+nav { display: grid; gap: 8px; }
+nav button { text-align: left; font-size: 12px; font-weight: 400; }
+nav button[aria-current="true"] { border-color: #426151; background: #e8ece2; }
+h1 { font-family: Georgia, "Noto Serif JP", serif; font-weight: 400; font-size: clamp(30px, 4vw, 46px); line-height: 1.5; letter-spacing: -.03em; margin: 16px 0 24px; }
+h2 { font-size: 19px; font-weight: 500; margin: 0 0 16px; }
+p { line-height: 1.9; font-size: 14px; }
+.eyebrow { letter-spacing: .17em; font-size: 10px; color: #6d7b61; }
+.hint { font-size: 12px; color: #647167; }
+.retention { max-width: 650px; font-size: 13px; padding-left: 12px; border-left: 2px solid #7b8e69; }
+button, .file-button, select, input { font: inherit; }
+button, .file-button { display: inline-block; border: 1px solid #294738; padding: 12px 18px; background: #294738; color: #fff; font-size: 13px; font-weight: 500; cursor: pointer; text-decoration: none; border-radius: 2px; }
+button:disabled { opacity: .5; cursor: wait; }
+aside button, .secondary { color: #294738; background: transparent; border-color: #b9c1b3; }
+button:hover:not(:disabled), .file-button:hover { filter: brightness(.92); }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #af784a; outline-offset: 3px; }
+#files { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.file-button:has(+ input:focus-visible) { outline: 3px solid #af784a; }
+section { margin-bottom: 40px; }
+#notice { color: #78442c; min-height: 1.5em; }
+.asset { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 16px; padding: 14px 0; border-bottom: 1px solid #d8dbd0; }
+.asset img, .asset video { width: 72px; height: 56px; object-fit: contain; background: #e8e8df; }
+.asset strong { font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
+.asset p { margin: 4px 0 0; font-size: 12px; }
+progress { width: 100%; height: 5px; accent-color: #426151; }
+.section-heading { display: flex; align-items: baseline; justify-content: space-between; }
+#scenes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.scene { border-top: 1px solid #9da997; padding-top: 12px; min-width: 0; }
+.scene.excluded { opacity: .55; }
+.scene img, .scene video { width: 100%; height: 160px; object-fit: contain; background: #dedfd5; }
+.scene label { display: block; font-size: 12px; line-height: 2; margin-top: 8px; }
+.scene select { display: block; max-width: 100%; width: 100%; background: transparent; border: 1px solid #b9c1b3; padding: 8px; }
+.scene input[type="number"] { width: 85px; background: transparent; border: 1px solid #b9c1b3; padding: 5px; }
+.scene button { padding: 6px 12px; margin-top: 8px; }
+.actions { display: flex; gap: 12px; margin-top: 28px; }
+#output { width: 100%; max-height: 480px; margin: 20px 0; background: #121a15; }
+.job { padding: 12px 0; border-bottom: 1px solid #d8dbd0; font-size: 13px; }
+.job button { margin-left: 16px; padding: 5px 10px; }
+footer { border-top: 1px solid #d8dbd0; padding: 24px 5vw; color: #647167; font-size: 11px; }
+[hidden] { display: none !important; }
+@media (max-width: 760px) { main { grid-template-columns: 1fr; padding: 24px; gap: 24px; } aside { border-right: 0; padding: 0 0 20px; border-bottom: 1px solid #d8dbd0; } aside h2, aside .hint { display: none; } nav { margin-top: 12px; grid-template-columns: repeat(2, 1fr); } header span { display: none; } #scenes { grid-template-columns: 1fr; } }
