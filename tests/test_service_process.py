@@ -68,6 +68,12 @@ class ProcessTests(unittest.TestCase):
                 csrf = call("/api/session")["csrf"]
                 project = call("/api/projects", {})["id"]
                 base = f"/api/projects/{project}"
+                chunk = b"x" * (8 * 1024**2)
+                boundary_asset = call(base + "/assets", {"name": "boundary.mp4", "size": len(chunk)})["id"]
+                boundary_endpoint = base + f"/assets/{boundary_asset}"
+                self.assertEqual(call(boundary_endpoint + "/chunks", chunk, "PUT", {"Upload-Offset": "0"})["offset"], len(chunk))
+                self.assertEqual(call(boundary_endpoint)["offset"], len(chunk))
+                call(boundary_endpoint, method="DELETE", extra={"X-CSRF-Token": csrf})
                 image = io.BytesIO()
                 Image.new("RGB", (48, 96), "red").save(image, format="PNG")
                 data = image.getvalue()
