@@ -47,7 +47,7 @@ def main():
     if config.public_trial:
         proxy = {"trusted_proxy": config.trusted_proxy, "trusted_proxy_count": 1,
                  "trusted_proxy_headers": {"x-forwarded-proto", "x-forwarded-for"}}
-    server = create_server(app, host=host, port=port, threads=6, max_request_body_size=config.chunk_bytes, max_request_header_size=16384, connection_limit=32, channel_timeout=60, clear_untrusted_proxy_headers=True, **proxy)
+    server = create_server(app, host=host, port=port, threads=6, max_request_body_size=config.chunk_bytes + 1, max_request_header_size=16384, connection_limit=32, channel_timeout=60, clear_untrusted_proxy_headers=True, **proxy)
 
     def stop(signum, frame):
         raise KeyboardInterrupt()
